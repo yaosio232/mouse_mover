@@ -3,3 +3,10 @@
 artifacts/
 .vs/
 *.user
+.env
+.env.*
+*.pfx
+*.p12
+*.key
+*credentials*.json
+*secrets*.json
