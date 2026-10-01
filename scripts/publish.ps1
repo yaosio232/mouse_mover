@@ -16,8 +16,15 @@ $files = @(Get-ChildItem -LiteralPath $outputPath -Force)
 if ($files.Count -ne 1 -or $files[0].Name -ne "MouseMoverApp.exe") {
     throw "Expected exactly one MouseMoverApp.exe in the delivery directory."
 }
+foreach ($instructions in @("README_EN.txt", "README_ZH-TW.txt")) {
+    $sourcePath = Join-Path $projectRoot "docs/$instructions"
+    # UTF-8 BOM keeps Traditional Chinese readable in Windows text editors.
+    [IO.File]::WriteAllText((Join-Path $outputPath $instructions),
+        [IO.File]::ReadAllText($sourcePath), [Text.UTF8Encoding]::new($true))
+}
 $digest = (Get-FileHash -LiteralPath $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $checksumPath = Join-Path (Split-Path $outputPath -Parent) "SHA256SUMS.txt"
 [IO.File]::WriteAllText($checksumPath,"$digest  MouseMoverApp.exe`n",[Text.UTF8Encoding]::new($false))
 Write-Output "Single-file EXE: $($files[0].FullName)"
+Write-Output "Instructions: README_EN.txt, README_ZH-TW.txt"
 Write-Output "SHA256: $digest"

@@ -25,4 +25,6 @@ jobs:
           name: MouseMoverApp-win-x64
           path: |
             artifacts/release/MouseMoverApp.exe
+            artifacts/release/README_EN.txt
+            artifacts/release/README_ZH-TW.txt
             artifacts/SHA256SUMS.txt
