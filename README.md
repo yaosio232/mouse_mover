@@ -1,4 +1,4 @@
-# AZu Sanpo
+# Mouse Mover App
 
 原生 Windows Forms 滑鼠散步工具，依此倉庫的四份規格重建。
 
