@@ -14,7 +14,9 @@
 - 真實模擬左鍵點擊只送往程式自己的非互動狀態標籤；hook 觀察到注入 down/up 旗標。
 - F10 在另一個測試視窗取得焦點时，第一次開始監看，第二次完全停止。
 - 原生控制項 bitmap 與 `ui-default.png` 比對：四列排列、數值、文字與視窗尺寸相符；焦點框／Windows 外框依環境繪製。
-- `scripts/publish.ps1` 驗證交付目錄僅一個 `MouseMoverApp.exe`（71,713,913 bytes），SHA256 另存上一層。
+- `scripts/publish.ps1` 驗證交付目錄僅一個 `MouseMoverApp.exe`（71,713,927 bytes），SHA256 另存上一層。
+- 最終 EXE SHA256：`6c3829b1ac608c0d1cd325561414b4491e2b91d1bb28ce9e63e138808bc49f37`。
+- 獨立程式碼審查已確認鍵盤旗標修正，沒有重要未處理問題。
 - 發佈 EXE 實際啟動三秒，視窗標題 `AZu Sanpo`、持續執行，正常關閉。
 - 原始碼與待提交文件掃描未發現 Token、私鑰、密碼或使用者個人設定；建置產物與憑證檔由 `.gitignore` 排除。
 
