@@ -30,3 +30,11 @@
 4. 若需像素完全一致，固定 Windows 佈景、字型、DPI 後比對參考圖片。
 
 技術差異：採 .NET 8 自包含發佈；原始 icon 未提供，使用重製藍色滑鼠圖示；修正歷史規格的鍵盤旗標錯誤（bit 0 是延伸鍵，bit 4 才是注入），詳見 [Microsoft 文件](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-kbdllhookstruct)。
+
+## v1.0.1 圖示更新
+
+- 依使用者提供的 rat SVG 製作藍色 rat 與藍色外圈，背景透明；ICO 包含 16、24、32、48、64、128、256 像素。
+- Build：0 警告、0 錯誤；交付目錄僅一個 EXE。
+- 從發佈 EXE 擷取內嵌圖示，確認為新版圈形 rat；EXE 實際啟動、正常關閉。
+- SHA256：`873b9facb04f180e805fa5b50990ffd7016f43f01dee0ec158d4653afb9705c3`。
+- 此版本只更新圖示與版本資訊，功能及原有驗收範圍不變。

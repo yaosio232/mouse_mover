@@ -30,7 +30,7 @@ dotnet run --project tests/MouseMoverApp.Checks -c Release
 
 - 使用本機現有 .NET 8 SDK，取代規格記錄的 .NET 6；WinForms 與 Win32 行為保持相同。
 - 修正规格的鍵盤注入判定：鍵盤使用 `LLKHF_INJECTED (0x10)`；滑鼠仍使用 `0x01`。確保實體延伸鍵也會重設閒置，模擬鍵盤輸入不會中斷移動。依 [Microsoft API 文件](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-kbdllhookstruct)。
-- 規格未附原始 `mouseIcon.ico`，此版本使用重製的藍色滑鼠圖示，未更改視窗內容區。
+- 圖示依使用者提供的 rat SVG 製作，rat 與外圈均為藍色，背景透明；保留 SVG、PNG 與多尺寸 ICO。
 - 保留 Random 策略類別供修改編譯設定，UI 固定使用 AZKi。
 
 原始規格：[功能與狀態](01-FUNCTIONAL-SPEC.md)、[UI](02-UI-SPEC.md)、[路徑](03-MOVEMENT-SPEC.md)、[平台與驗收](04-PLATFORM-QA.md)。
