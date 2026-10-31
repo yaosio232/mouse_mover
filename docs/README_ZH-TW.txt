@@ -1,6 +1,6 @@
 Mouse Mover App
 
-原生 Windows Forms 滑鼠散步工具，依此倉庫的四份規格重建。
+全 Rust 滑鼠散步工具，使用原生 Win32 控制項，不需要 .NET 或額外 GUI 執行環境。
 
 下載與操作
 
@@ -13,15 +13,15 @@ Mouse Mover App
 
 額外功能
 
-- Stop countdown 是獨立的停止倒數；勾選／修改時長立即重新計時，Start 時也重新計時，到期顯示 Done 並完全停止。預設未勾選，180 分鐘／0 秒。
+- Stop countdown 是獨立的停止倒數；勾選／修改時長立即重新計時，Start 時也重新計時，到期顯示 Done 並完全停止。預設未勾選，3 小時／0 分鐘／0 秒。
 - 關閉視窗即停止；沒有背景服務、設定儲存或網路功能。
 
 建置與發佈
 
-Windows 與 .NET 8 SDK：
+需要 Windows、Rust stable（x86_64-pc-windows-gnu），以及 PATH 中相容的 x64 MinGW-w64 工具鏈（GCC、dlltool、windres）：
 
-dotnet build -c Release
-dotnet run --project tests/MouseMoverApp.Checks -c Release
+cargo build --release --locked
+cargo test --locked
 ./scripts/publish.ps1
 
 發佈目錄 artifacts/release 含 MouseMoverApp.exe、README_EN.txt 與 README_ZH-TW.txt。

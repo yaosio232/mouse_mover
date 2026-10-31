@@ -1,6 +1,9 @@
 # Mouse Mover App
 
-A native Windows Forms mouse movement tool, rebuilt from the four specifications in this repository.
+A pure Rust mouse movement tool using native Win32 controls. Runs directly without .NET or a bundled GUI runtime.
+
+The Rust build is about 342 KB; local warm startup was about 10× faster than the
+previous C# standalone release. See [measurements and verification](docs/rust-migration-results.md).
 
 ## Download and usage
 
@@ -13,18 +16,25 @@ Download `MouseMoverApp.exe` from [Releases](https://github.com/yaosio232/mouse_
 
 ## Additional features
 
-- **Stop countdown** is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Done and stops completely. It is disabled by default, with a preset of 180 minutes / 0 seconds.
+- **Stop countdown** is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Done and stops completely. It is disabled by default, with a preset of 3 hours / 0 minutes / 0 seconds.
 - Closing the window stops the app. There is no background service, saved settings, or network functionality.
 
 ## Build and publish
 
-Requires Windows and the .NET 8 SDK:
+Requires Windows, Rust stable (x86_64-pc-windows-gnu), and a compatible x64 MinGW-w64 toolchain (GCC, dlltool, windres) on PATH:
 
 ```powershell
-dotnet build -c Release
-dotnet run --project tests/MouseMoverApp.Checks -c Release
+cargo build --release --locked
+cargo test --locked
 ./scripts/publish.ps1
 ```
+
+Use `cargo fmt --check` and `cargo clippy --locked --all-targets -- -D warnings`
+for source checks. After publishing, run
+`./scripts/check-ui.ps1 -Executable artifacts/release/MouseMoverApp.exe` on Windows.
+The publish directory must be empty; choose `-OutputDirectory artifacts/rust-release`
+if an older release already exists. The original four specifications describe the
+C# baseline; the current implementation and build are entirely Rust.
 
 The publish directory `artifacts/release` contains `MouseMoverApp.exe` and English / Traditional Chinese instruction TXT files (`README_EN.txt` and `README_ZH-TW.txt`).
 
@@ -32,7 +42,7 @@ The publish directory `artifacts/release` contains `MouseMoverApp.exe` and Engli
 
 ## 中文
 
-原生 Windows Forms 滑鼠散步工具，依此倉庫的四份規格重建。
+全 Rust 滑鼠散步工具，使用原生 Win32 控制項，不需要 .NET 或額外 GUI 執行環境。
 
 ### 下載與操作
 
@@ -45,17 +55,23 @@ The publish directory `artifacts/release` contains `MouseMoverApp.exe` and Engli
 
 ### 額外功能
 
-- **Stop countdown** 是獨立的停止倒數；勾選／修改時長立即重新計時，Start 時也重新計時，到期顯示 Done 並完全停止。預設未勾選，180 分鐘／0 秒。
+- **Stop countdown** 是獨立的停止倒數；勾選／修改時長立即重新計時，Start 時也重新計時，到期顯示 Done 並完全停止。預設未勾選，3 小時／0 分鐘／0 秒。
 - 關閉視窗即停止；沒有背景服務、設定儲存或網路功能。
 
 ### 建置與發佈
 
-Windows 與 .NET 8 SDK：
+需要 Windows、Rust stable（x86_64-pc-windows-gnu），以及 PATH 中相容的 x64 MinGW-w64 工具鏈（GCC、dlltool、windres）：
 
 ```powershell
-dotnet build -c Release
-dotnet run --project tests/MouseMoverApp.Checks -c Release
+cargo build --release --locked
+cargo test --locked
 ./scripts/publish.ps1
 ```
+
+程式碼檢查：`cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`。
+發佈後可執行 `./scripts/check-ui.ps1 -Executable artifacts/release/MouseMoverApp.exe`
+驗證原生視窗及操作。發佈目錄必須為空；若已有舊版，可加上
+`-OutputDirectory artifacts/rust-release`。原始四份規格保留作為 C# 版行為基準，
+目前實作與建置已改為全 Rust。
 
 發佈目錄 `artifacts/release` 含 `MouseMoverApp.exe` 及中英文說明 TXT（`README_EN.txt` 與 `README_ZH-TW.txt`）。

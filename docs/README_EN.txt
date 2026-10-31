@@ -1,6 +1,6 @@
 Mouse Mover App
 
-A native Windows Forms mouse movement tool, rebuilt from the four specifications in this repository.
+A pure Rust mouse movement tool using native Win32 controls. Runs directly without .NET or a bundled GUI runtime.
 
 Download and usage
 
@@ -13,15 +13,15 @@ Download MouseMoverApp.exe from https://github.com/yaosio232/mouse_mover/release
 
 Additional features
 
-- Stop countdown is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Done and stops completely. It is disabled by default, with a preset of 180 minutes / 0 seconds.
+- Stop countdown is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Done and stops completely. It is disabled by default, with a preset of 3 hours / 0 minutes / 0 seconds.
 - Closing the window stops the app. There is no background service, saved settings, or network functionality.
 
 Build and publish
 
-Requires Windows and the .NET 8 SDK:
+Requires Windows, Rust stable (x86_64-pc-windows-gnu), and a compatible x64 MinGW-w64 toolchain (GCC, dlltool, windres) on PATH:
 
-dotnet build -c Release
-dotnet run --project tests/MouseMoverApp.Checks -c Release
+cargo build --release --locked
+cargo test --locked
 ./scripts/publish.ps1
 
 The publish directory artifacts/release contains MouseMoverApp.exe, README_EN.txt, and README_ZH-TW.txt.

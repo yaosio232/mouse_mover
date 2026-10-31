@@ -7,11 +7,15 @@ if (Test-Path -LiteralPath $outputPath) {
         throw "Publish directory must be empty. Choose a new output directory; existing files will not be removed."
     }
 }
-dotnet publish (Join-Path $projectRoot "MouseMoverApp.csproj") -c Release -r win-x64 `
-    -p:PublishSingleFile=true -p:SelfContained=true -p:PublishTrimmed=false `
-    -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-    -p:DebugType=None -p:DebugSymbols=false -o $outputPath
-if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+$manifest = Join-Path $projectRoot "Cargo.toml"
+Push-Location $projectRoot
+try {
+    cargo build --manifest-path $manifest --release --locked
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+} finally { Pop-Location }
+New-Item -ItemType Directory -Force $outputPath | Out-Null
+Copy-Item -LiteralPath (Join-Path $projectRoot "target/release/azu-sanpo.exe") `
+    -Destination (Join-Path $outputPath "MouseMoverApp.exe")
 $files = @(Get-ChildItem -LiteralPath $outputPath -Force)
 if ($files.Count -ne 1 -or $files[0].Name -ne "MouseMoverApp.exe") {
     throw "Expected exactly one MouseMoverApp.exe in the delivery directory."
