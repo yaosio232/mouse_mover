@@ -12,6 +12,7 @@ public static class NativeUiCheck {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint key, out byte alpha, out uint flags);
     [DllImport("user32.dll")] public static extern int MapWindowPoints(IntPtr from, IntPtr to, ref Rect rect, uint points);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
@@ -49,27 +50,46 @@ try {
     $minutes = [NativeUiCheck]::GetDlgItem($window,104)
     $seconds = [NativeUiCheck]::GetDlgItem($window,105)
     $hours = [NativeUiCheck]::GetDlgItem($window,111)
-    $label = [NativeUiCheck]::GetDlgItem($window,110)
+    $backgroundToggle = [NativeUiCheck]::GetDlgItem($window,117)
+    # Countdown feedback shares the native checkbox caption, keeping three rows.
+    $label = $check
     $client = [NativeUiCheck+Rect]::new()
     Require ([NativeUiCheck]::GetClientRect($window,[ref]$client)) 'No client bounds'
     $scale = [NativeUiCheck]::GetDpiForWindow($window)/96.0
-    Require (($client.Right/$scale) -le 300 -and ($client.Bottom/$scale) -le 170) 'Window must stay near original size (max 300 x 170 logical pixels)'
+    Require (($client.Right/$scale) -le 350 -and ($client.Bottom/$scale) -le 140) 'Three-row window must stay compact (max 350 x 140 logical pixels)'
     $rows = @()
-    foreach ($id in @(100,102,103,110)) {
+    $buttonBounds = $null
+    foreach ($id in @(100,102,103)) {
         $handle = [NativeUiCheck]::GetDlgItem($window,$id)
         $bounds = [NativeUiCheck+Rect]::new()
         Require ($handle -ne 0 -and [NativeUiCheck]::GetWindowRect($handle,[ref]$bounds)) "Missing row control $id"
         $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$bounds,2)
         Require ($bounds.Left -ge 0 -and $bounds.Top -ge 0 -and $bounds.Right -le $client.Right -and $bounds.Bottom -le $client.Bottom) "Row $id is clipped"
-        if ($id -eq 100) { Require (($bounds.Bottom-$bounds.Top)/$scale -ge 39) 'Primary button must be at least 40 logical pixels high' }
+        if ($id -eq 100) {
+            Require (($bounds.Bottom-$bounds.Top)/$scale -ge 39) 'Primary button must be at least 40 logical pixels high'
+            $buttonBounds = $bounds
+        }
         $rows += $bounds.Top
     }
-    Require (@($rows | Sort-Object -Unique).Count -eq 4) 'Expected four compact rows'
+    Require (@($rows | Sort-Object -Unique).Count -eq 3) 'Expected exactly three compact rows'
+    $iconBounds = [NativeUiCheck+Rect]::new()
+    Require ($backgroundToggle -ne 0 -and [NativeUiCheck]::GetWindowRect($backgroundToggle,[ref]$iconBounds)) 'Missing background icon'
+    $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$iconBounds,2)
+    Require ($iconBounds.Left -ge $buttonBounds.Right -and $iconBounds.Right -le $client.Right) 'Background icon must fit beside the primary button'
+    Require ([Math]::Abs(($iconBounds.Top+$iconBounds.Bottom-$buttonBounds.Top-$buttonBounds.Bottom)/2) -le 3*$scale) 'Background icon must align with the primary button'
+    Require (([NativeUiCheck]::GetWindowLong($backgroundToggle,-16) -band 0x10000) -ne 0) 'Background icon must support keyboard focus'
     $detailBounds = [NativeUiCheck+Rect]::new()
     Require ([NativeUiCheck]::GetWindowRect([NativeUiCheck]::GetDlgItem($window,114),[ref]$detailBounds)) 'Missing idle information'
     $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$detailBounds,2)
     Require ([Math]::Abs($detailBounds.Top-$rows[1]) -le 3*$scale) 'Status and time must share a row'
     Require ($detailBounds.Right -le $client.Right -and $detailBounds.Bottom -le $client.Bottom) 'Idle information is clipped'
+    $inBounds = [NativeUiCheck+Rect]::new()
+    $inLabel = [NativeUiCheck]::GetDlgItem($window,116)
+    Require ($inLabel -ne 0 -and [NativeUiCheck]::GetWindowRect($inLabel,[ref]$inBounds)) 'Missing In countdown'
+    $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$inBounds,2)
+    Require ([Math]::Abs($inBounds.Top-$rows[1]) -le 3*$scale -and $inBounds.Right -le $client.Right) 'In countdown must fit the status row'
+    Require ((Text ([NativeUiCheck]::GetDlgItem($window,114))) -eq 'IDLE 00:00:00') 'Initial IDLE must show hours, minutes and seconds'
+    Require ((Text $inLabel) -eq 'In 03:00') 'Initial In countdown must show three minutes'
     foreach ($handle in @($hours,$minutes,$seconds)) {
         $bounds = [NativeUiCheck+Rect]::new()
         Require ([NativeUiCheck]::GetWindowRect($handle,[ref]$bounds)) 'Missing duration field bounds'
@@ -79,7 +99,18 @@ try {
     }
     Require ((Text $button) -eq 'Start (F10)') 'Startup button differs'
     Require ((Text $hours) -eq '3' -and (Text $minutes) -eq '0' -and (Text $seconds) -eq '0') 'Default duration differs'
-    Require ((Text $label) -eq 'Stop countdown: Off') 'Countdown not initially off'
+    Require ((Text $label) -eq 'Stop after') 'Countdown not initially off'
+    Require ((Text $backgroundToggle) -eq 'Make background transparent') 'Background icon must have an accessible action name'
+    Click $backgroundToggle
+    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x80000) -ne 0) 'Transparent background mode was not enabled'
+    [uint32]$key = 0; [byte]$alpha = 0; [uint32]$flags = 0
+    Require ([NativeUiCheck]::GetLayeredWindowAttributes($window,[ref]$key,[ref]$alpha,[ref]$flags)) 'No native transparency attributes'
+    Require ($key -eq (246 -bor (248 -shl 8) -bor (252 -shl 16)) -and ($flags -band 1) -ne 0 -and ($flags -band 2) -eq 0) 'Only the background color should be transparent'
+    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x20) -eq 0) 'Controls must remain clickable in transparent mode'
+    Require ((Text $backgroundToggle) -eq 'Restore opaque background') 'Transparent icon action name did not update'
+    Click $backgroundToggle
+    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x80000) -eq 0) 'Opaque background mode was not restored'
+    Require ((Text $button) -eq 'Start (F10)' -and (Text $hours) -eq '3' -and (Text $label) -eq 'Stop after') 'Background toggle changed monitoring or duration state'
     if ($Screenshot) {
         Add-Type -AssemblyName System.Drawing
         $rect = [NativeUiCheck+Rect]::new()
@@ -110,28 +141,32 @@ try {
     Require ((Text $button) -eq 'Start (F10)') 'Stop did not stop'
     $null = [NativeUiCheck]::WriteText($hours,0xC,0,'1')
     Click $check
-    Require ((Text $label) -in @('Stop countdown: 60:00','Stop countdown: 59:59')) 'Hour field did not set a one-hour countdown'
+    Require ((Text $label) -in @('Stop 01:00:00','Stop 00:59:59')) 'Hour field did not set a one-hour countdown'
+    Click $backgroundToggle
+    Click $backgroundToggle
+    Require ([NativeUiCheck]::SendMessage($check,0xF0,0,0).ToInt64() -eq 1) 'Background toggle changed checkbox state'
+    Require ((Text $label) -in @('Stop 01:00:00','Stop 00:59:59')) 'Background toggle changed active countdown'
     Click $check
     $null = [NativeUiCheck]::WriteText($hours,0xC,0,'0')
     $null = [NativeUiCheck]::WriteText($minutes,0xC,0,'0')
     $null = [NativeUiCheck]::WriteText($seconds,0xC,0,'1')
     Click $check
     Start-Sleep -Milliseconds 2200
-    Require ((Text $label) -eq 'Stop countdown: Done') "Countdown must expire even before Start; actual='$(Text $label)', minutes='$(Text $minutes)', seconds='$(Text $seconds)'"
+    Require ((Text $label) -eq 'Stop done') "Countdown must expire even before Start; actual='$(Text $label)', minutes='$(Text $minutes)', seconds='$(Text $seconds)'"
     Click $button
-    Require ((Text $button) -eq 'Stop (F10)' -and (Text $label) -ne 'Stop countdown: Done') 'Start did not reset countdown'
+    Require ((Text $button) -eq 'Stop (F10)' -and (Text $label) -ne 'Stop done') 'Start did not reset countdown'
     Click $button
-    Require ((Text $label) -eq 'Stop countdown: Ready') 'Manual stop must clear deadline'
+    Require ((Text $label) -eq 'Stop ready') 'Manual stop must clear deadline'
     $null = [NativeUiCheck]::WriteText($seconds,0xC,0,'0')
-    Require ((Text $label) -eq 'Stop countdown: set > 00:00') 'Zero duration differs'
+    Require ((Text $label) -eq 'Set > 00:00') 'Zero duration differs'
     Click $check
-    Require ((Text $label) -eq 'Stop countdown: Off') 'Disabling countdown differs'
+    Require ((Text $label) -eq 'Stop after') 'Disabling countdown differs'
     # Focus stays with the calling shell, so this also tests global registration.
     F10
     Require ((Text $button) -eq 'Stop (F10)') 'Global F10 did not start'
     F10
     Require ((Text $button) -eq 'Start (F10)') 'Global F10 did not stop'
-    'PASS native window, controls, Start/Stop, countdown, zero duration, global F10'
+    'PASS three-row window, controls, background toggle, Start/Stop, countdown, zero duration, global F10'
     $failed = $false
 } finally {
     if (!$process.HasExited) {

@@ -1,4 +1,4 @@
-# Rust migration verification — 2026-11-01
+# Rust migration verification — 2026-11-02
 
 The application is now Rust with native Win32 controls, hooks and input APIs.
 The C# project, implementation and test runner have been removed. The release
@@ -8,52 +8,60 @@ does not need .NET, a WebView, or third-party runtime DLLs.
 
 | Measurement | C# v1.0.1 | Rust |
 | --- | ---: | ---: |
-| EXE bytes | 71,855,237 | 345,088 |
-| Warm startup median | 211.06 ms | 22.78 ms |
+| EXE bytes | 71,855,237 | 349,184 |
+| Warm startup median | 222.54 ms | 23.04 ms |
 
-EXE size fell **99.52%**. Warm startup was **9.3× faster** on this machine.
+EXE size fell **99.51%**. Warm startup was **9.7× faster** on this machine.
 These are warm process launches, not cold boot or first-download measurements:
 one warmup per executable, then ten launches each in alternating order, measuring
 process start until its main window is visible. Measurements include PowerShell
 `Start-Process` overhead and can vary with Windows, hardware and antivirus state.
 
 Raw samples and hashes: `artifacts/startup-benchmark.json`.
-The final Rust EXE is `artifacts/compact-release/MouseMoverApp.exe`.
-SHA-256: `df2b511382bc18da594aa362343b5e1f32df544cbd21482b9d68858e8466686e`.
+The final Rust EXE is `artifacts/three-row-release/MouseMoverApp.exe`.
+SHA-256: `4656990692f2193f41f69cac9b6350bb9516d921d412d98a6ce574892a14881a`.
 
-The light UI uses DPI-scaled Segoe UI, a blue native owner-drawn action button,
-a status dot with text, and inline hours/minutes/seconds fields. The 290×148
-client has four rows: a 40px-high button, state-colored status with gray idle/time,
-"Stop after" plus duration fields, and the countdown result. Body text is 10pt;
-the button is 11pt. Preview:
+The 340×130 client has three rows: a gradient blue button and checkerboard
+background toggle; a lamp, colored Status badge, IDLE HH:MM:SS and In 03:00;
+then a 20px native checkbox with 12pt normal-weight caption and h/m/s fields.
+Countdown feedback is integrated into the checkbox caption. The checkerboard
+icon switches background-only transparency while keeping controls readable.
+Status and In text are vertically aligned. Preview:
 
 ![Light native Windows interface](ui-rust-light.png)
 
 ## Verification
 
 - `cargo fmt --check`: passed.
-- `cargo test --locked`: twelve passed, zero failed (ten core, two native UI).
+- `cargo test --locked`: fifteen passed, zero failed (ten core, five native/UI).
   Includes the complete 446-point
   path fixture generated from the old C# release implementation, idle/countdown
   transitions, hours/minutes/seconds conversion, injected-input flag filtering and
   worker cancellation replacement.
+- Presentation checks cover IDLE total hours, the In threshold at 179/180/181
+  seconds and all inline countdown captions. Native memory-DC pixels confirm the
+  checkbox uses BM_GETCHECK instead of misleading draw flags; restoring the old
+  flag read made the regression fail. Native layered-window properties confirm
+  color-key mode and restoration of the original style.
 - Native regression: 100 monitoring input events advance the input timestamp
   without text writes or control invalidations. A Win32 subclass also verifies
   duplicate text is not rewritten. Restoring the old unconditional refresh caused
   the regression to fail before restoring the fix.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `scripts/publish.ps1 -OutputDirectory artifacts/compact-release`: passed; standalone
+- `scripts/publish.ps1 -OutputDirectory artifacts/three-row-release`: passed; standalone
   EXE, two UTF-8 instruction TXT files, and SHA-256 output produced.
-- `scripts/check-ui.ps1 -Executable artifacts/compact-release/MouseMoverApp.exe`:
+- `scripts/check-ui.ps1 -Executable artifacts/three-row-release/MouseMoverApp.exe`:
   passed. Checks topmost fixed window, 3/0/0 defaults, all three spinner buddies/ranges,
   Start/Stop, hours affecting countdown, countdown before Start, restart, zero
-  duration and global F10. Also checks compact client bounds, four rows, shared
-  status/time row, inline duration fields, and the taller primary button.
+  duration and global F10. Also checks three rows, In 03:00 and IDLE HH:MM:SS,
+  icon placement and accessible action name, native color-key transparency and
+  restoration, and that changing the background preserves countdown and fields.
 - Native render captured and visually inspected for readable text, unclipped
   bounds, consistent light backgrounds and aligned duration fields, including
   `999h 59m 59s` at the enlarged font size.
 - PE import inspection: x64 Windows GUI subsystem; only Windows system DLLs
-  (`kernel32`, `msvcrt`, `ntdll`, synchronization API set, `comctl32`, `gdi32`, `user32`).
+  (`kernel32`, `msvcrt`, `ntdll`, synchronization API set, `comctl32`, `gdi32`,
+  `msimg32`, `user32`).
 
 Build environment: Rust 1.99.1, x86_64-pc-windows-gnu, compatible x64 MinGW-w64.
 The native smoke test does not wait three real minutes or generate a full cursor

@@ -14,20 +14,24 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
-        CreateEllipticRgn, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject,
-        DrawFocusRect, DrawTextW, FillRect, FillRgn, InvalidateRect, RestoreDC, SaveDC,
-        SelectObject, SetBkColor, SetBkMode, SetTextColor, UpdateWindow, DT_CENTER, DT_SINGLELINE,
-        DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, TRANSPARENT,
+        CreateEllipticRgn, CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush,
+        DeleteObject, DrawFocusRect, DrawTextW, FillRect, FillRgn, FrameRgn, GradientFill,
+        InvalidateRect, Polyline, RedrawWindow, RestoreDC, SaveDC, SelectClipRgn, SelectObject,
+        SetBkColor, SetBkMode, SetTextColor, UpdateWindow, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
+        FW_NORMAL, FW_SEMIBOLD, GRADIENT_FILL_RECT_V, GRADIENT_RECT, HBRUSH, HDC, HFONT, OPAQUE,
+        PS_SOLID, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, TRANSPARENT, TRIVERTEX,
     },
     System::LibraryLoader::GetModuleHandleW,
     System::SystemInformation::GetTickCount,
-    System::SystemServices::{SS_LEFT, SS_OWNERDRAW},
+    System::SystemServices::{SS_CENTERIMAGE, SS_LEFT, SS_OWNERDRAW},
     UI::{
         Controls::{
-            InitCommonControls, BST_CHECKED, DRAWITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, UDM_SETBUDDY,
-            UDM_SETPOS32, UDM_SETRANGE32, UDS_ALIGNRIGHT, UDS_ARROWKEYS, UDS_SETBUDDYINT,
+            InitCommonControls, BST_CHECKED, CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT,
+            CDIS_SELECTED, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, NMCUSTOMDRAW, NM_CUSTOMDRAW,
+            ODS_FOCUS, ODS_SELECTED, UDM_SETBUDDY, UDM_SETPOS32, UDM_SETRANGE32, UDS_ALIGNRIGHT,
+            UDS_ARROWKEYS, UDS_SETBUDDYINT,
         },
         HiDpi::GetDpiForSystem,
         Input::KeyboardAndMouse::{
@@ -42,6 +46,7 @@ use windows_sys::Win32::{
 const WM_INPUT_EVENT: u32 = WM_APP + 1;
 const WM_TIMER_ID: usize = 1;
 const WM_HOTKEY_ID: i32 = 1;
+const BACKGROUND_COLOR: u32 = 246 | (248 << 8) | (252 << 16);
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 static MOUSE_HOOK: AtomicIsize = AtomicIsize::new(0);
 static KEY_HOOK: AtomicIsize = AtomicIsize::new(0);
@@ -49,27 +54,32 @@ static WORKER_CANCEL: WorkerCancel = Mutex::new(None);
 static mut INSTANCE: isize = 0;
 static mut DPI: i32 = 96;
 static mut TIMER_RUNNING: bool = false;
+static mut BACKGROUND_TRANSPARENT: bool = false;
 
 #[derive(Clone, Copy)]
 struct Ui {
     hwnd: HWND,
     button: HWND,
+    background_toggle: HWND,
     lamp: HWND,
-    status: HWND,
-    detail: HWND,
+    status_badge: HWND,
+    idle_badge: HWND,
+    in_time: HWND,
     check: HWND,
     hours: HWND,
     minutes: HWND,
     seconds: HWND,
-    countdown: HWND,
 }
 static mut UI: Option<Ui> = None;
 static mut LAMP_BRUSHES: [HBRUSH; 3] = [std::ptr::null_mut(); 3];
+static mut STATUS_BRUSHES: [HBRUSH; 3] = [std::ptr::null_mut(); 3];
 static mut BG_BRUSH: HBRUSH = std::ptr::null_mut();
 static mut SURFACE_BRUSH: HBRUSH = std::ptr::null_mut();
-static mut PRIMARY_BRUSH: HBRUSH = std::ptr::null_mut();
-static mut PRESSED_BRUSH: HBRUSH = std::ptr::null_mut();
-static mut FONTS: [HFONT; 4] = [std::ptr::null_mut(); 4];
+static mut BUTTON_BORDER_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut CHECK_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut CHECK_HOT_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut IDLE_BORDER_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut FONTS: [HFONT; 6] = [std::ptr::null_mut(); 6];
 #[cfg(test)]
 static TEST_UI_INVALIDATIONS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
@@ -103,10 +113,23 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             unsafe {
                 if id == 100 {
                     toggle();
+                } else if id == 117 {
+                    toggle_background();
                 } else if id == 103
                     || ((id == 104 || id == 105 || id == 111) && notification == EN_CHANGE as u16)
                 {
                     configure_countdown();
+                }
+            }
+            0
+        }
+        WM_NOTIFY if lp != 0 => {
+            let header = unsafe { &*(lp as *const windows_sys::Win32::UI::Controls::NMHDR) };
+            if header.idFrom == 103 && header.code == NM_CUSTOMDRAW {
+                let draw = unsafe { &*(lp as *const NMCUSTOMDRAW) };
+                if draw.dwDrawStage == CDDS_PREPAINT {
+                    unsafe { draw_stop_checkbox(draw) };
+                    return CDRF_SKIPDEFAULT as LRESULT;
                 }
             }
             0
@@ -149,6 +172,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         draw_status_dot(item);
                         return 1;
                     }
+                    if item.CtlID == 102 {
+                        draw_status_badge(item);
+                        return 1;
+                    }
+                    if item.CtlID == 114 {
+                        draw_idle_badge(item);
+                        return 1;
+                    }
+                    if item.CtlID == 117 {
+                        draw_transparency_toggle(item);
+                        return 1;
+                    }
                 }
             }
             0
@@ -171,18 +206,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         WM_CTLCOLORSTATIC => {
             let id = unsafe { GetDlgCtrlID(lp as HWND) };
             let color = match id {
-                114 => rgb(102, 112, 133),
-                102 => STATE.with(|s| match s.borrow().status {
-                    Status::Stopped => rgb(37, 99, 235),
-                    Status::Monitoring => rgb(22, 128, 72),
-                    Status::Moving => rgb(220, 38, 38),
-                }),
+                116 => rgb(37, 99, 235),
                 _ => rgb(23, 32, 51),
             };
+            let opaque =
+                unsafe { BACKGROUND_TRANSPARENT && matches!(id, 108 | 109 | 113 | 115 | 116) };
             unsafe {
                 SetTextColor(wp as HDC, color);
-                SetBkMode(wp as HDC, TRANSPARENT as i32);
-                BG_BRUSH as LRESULT
+                if opaque {
+                    SetBkColor(wp as HDC, rgb(255, 255, 255));
+                    SetBkMode(wp as HDC, OPAQUE as i32);
+                    SURFACE_BRUSH as LRESULT
+                } else {
+                    SetBkMode(wp as HDC, TRANSPARENT as i32);
+                    BG_BRUSH as LRESULT
+                }
             }
         }
         WM_CTLCOLOREDIT => unsafe {
@@ -255,43 +293,73 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
             BS_OWNERDRAW as u32 | WS_TABSTOP,
             8,
             8,
-            274,
+            292,
             40,
             100,
         );
-        let lamp = make("STATIC", "", SS_OWNERDRAW, 8, 63, 8, 8, 101);
-        let status = make("STATIC", "Not Started", SS_LEFT, 22, 58, 92, 18, 102);
-        let detail = make(
+        let background_toggle = make(
+            "BUTTON",
+            "Make background transparent",
+            BS_OWNERDRAW as u32 | WS_TABSTOP,
+            306,
+            14,
+            26,
+            28,
+            117,
+        );
+        let lamp = make("STATIC", "", SS_OWNERDRAW, 8, 63, 14, 14, 101);
+        let status_label = make(
             "STATIC",
-            "Idle: 00:00    In: 03:00",
-            SS_LEFT,
-            116,
+            "Status:",
+            SS_LEFT | SS_CENTERIMAGE,
+            26,
             58,
-            166,
-            18,
+            42,
+            24,
+            115,
+        );
+        let status_badge = make("STATIC", "Not Started", SS_OWNERDRAW, 70, 58, 98, 24, 102);
+        let idle_badge = make(
+            "STATIC",
+            "IDLE 00:00:00",
+            SS_OWNERDRAW,
+            174,
+            58,
+            104,
+            24,
             114,
+        );
+        let in_time = make(
+            "STATIC",
+            "In 03:00",
+            SS_LEFT | SS_CENTERIMAGE,
+            282,
+            58,
+            50,
+            24,
+            116,
         );
         let check = make(
             "BUTTON",
             "Stop after",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
             8,
-            86,
-            108,
-            24,
+            96,
+            142,
+            26,
             103,
         );
-        let hour_label = make("STATIC", "h", SS_LEFT, 162, 90, 12, 18, 113);
-        let min_label = make("STATIC", "m", SS_LEFT, 218, 90, 12, 18, 108);
-        let sec_label_text = make("STATIC", "s", SS_LEFT, 274, 90, 12, 18, 109);
+        let hour_label = make("STATIC", "h", SS_LEFT, 198, 99, 10, 20, 113);
+        let min_label = make("STATIC", "m", SS_LEFT, 262, 99, 10, 20, 108);
+        let sec_label_text = make("STATIC", "s", SS_LEFT, 326, 99, 8, 20, 109);
         let hours = make(
             "EDIT",
             "3",
             WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
-            118,
-            86,
-            42,
-            24,
+            152,
+            96,
+            44,
+            26,
             111,
         );
         let uphour = make(
@@ -306,9 +374,12 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
         );
         if [
             button,
+            background_toggle,
             lamp,
-            status,
-            detail,
+            status_label,
+            status_badge,
+            idle_badge,
+            in_time,
             check,
             hour_label,
             min_label,
@@ -328,10 +399,10 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
             "EDIT",
             "0",
             WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
-            174,
-            86,
-            42,
-            24,
+            216,
+            96,
+            44,
+            26,
             104,
         );
         let upmin = make(
@@ -353,10 +424,10 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
             "EDIT",
             "0",
             WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
-            230,
-            86,
-            42,
-            24,
+            280,
+            96,
+            44,
+            26,
             105,
         );
         let upsec = make(
@@ -374,36 +445,28 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
         }
         SendMessageW(upsec, UDM_SETBUDDY, sec_edit as usize, 0);
         SendMessageW(upsec, UDM_SETRANGE32, 0, 59);
-        let countdown = make(
-            "STATIC",
-            "Stop countdown: Off",
-            SS_LEFT,
-            8,
-            122,
-            274,
-            18,
-            110,
-        );
-        if countdown.is_null() {
-            return false;
-        }
         SendMessageW(button, WM_SETFONT, FONTS[1] as usize, 1);
-        SendMessageW(status, WM_SETFONT, FONTS[3] as usize, 1);
-        SendMessageW(check, WM_SETFONT, FONTS[2] as usize, 1);
+        SendMessageW(background_toggle, WM_SETFONT, FONTS[0] as usize, 1);
+        SendMessageW(check, WM_SETFONT, FONTS[5] as usize, 1);
+        SendMessageW(status_label, WM_SETFONT, FONTS[0] as usize, 1);
+        SendMessageW(status_badge, WM_SETFONT, FONTS[3] as usize, 1);
+        SendMessageW(idle_badge, WM_SETFONT, FONTS[4] as usize, 1);
+        SendMessageW(in_time, WM_SETFONT, FONTS[4] as usize, 1);
         for edit in [hours, minutes, sec_edit] {
             SendMessageW(edit, WM_SETFONT, FONTS[2] as usize, 1);
         }
         UI = Some(Ui {
             hwnd,
             button,
+            background_toggle,
             lamp,
-            status,
-            detail,
+            status_badge,
+            idle_badge,
+            in_time,
             check,
             hours,
             minutes,
             seconds: sec_edit,
-            countdown,
         });
     }
     true
@@ -476,6 +539,102 @@ unsafe fn toggle() {
         tick();
     }
 }
+unsafe fn toggle_background() {
+    let Some(ui) = (unsafe { UI }) else { return };
+    let enable = !unsafe { BACKGROUND_TRANSPARENT };
+    if let Err(error) = unsafe { apply_background_mode(ui.hwnd, enable) } {
+        unsafe {
+            message(&format!(
+                "Unable to change background transparency:\r\n{}",
+                std::io::Error::from_raw_os_error(error as i32)
+            ));
+        }
+        return;
+    }
+    unsafe { BACKGROUND_TRANSPARENT = enable };
+    unsafe {
+        set_text(
+            ui.background_toggle,
+            if enable {
+                "Restore opaque background"
+            } else {
+                "Make background transparent"
+            },
+        );
+        RedrawWindow(
+            ui.hwnd,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+        );
+    }
+}
+
+unsafe fn apply_background_mode(hwnd: HWND, transparent: bool) -> Result<(), u32> {
+    unsafe { SetLastError(0) };
+    let previous = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let error = unsafe { GetLastError() };
+    if previous == 0 && error != 0 {
+        return Err(error);
+    }
+    let previous_style = previous as u32;
+    let next_style = if transparent {
+        previous_style | WS_EX_LAYERED
+    } else {
+        previous_style & !WS_EX_LAYERED
+    };
+    if previous_style == next_style && !transparent {
+        return Ok(());
+    }
+    if previous_style != next_style {
+        unsafe { SetLastError(0) };
+        let prior = unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next_style as isize) };
+        let error = unsafe { GetLastError() };
+        if prior == 0 && error != 0 {
+            return Err(error);
+        }
+    }
+    if transparent
+        && unsafe { SetLayeredWindowAttributes(hwnd, BACKGROUND_COLOR, 255, LWA_COLORKEY) } == 0
+    {
+        let error = unsafe { GetLastError() };
+        unsafe { restore_window_style(hwnd, previous) };
+        return Err(if error == 0 { 31 } else { error });
+    }
+    if unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )
+    } == 0
+    {
+        let error = unsafe { GetLastError() };
+        unsafe { restore_window_style(hwnd, previous) };
+        return Err(if error == 0 { 31 } else { error });
+    }
+    Ok(())
+}
+
+unsafe fn restore_window_style(hwnd: HWND, style: isize) {
+    unsafe {
+        SetLastError(0);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+}
 unsafe fn stop(done: bool) {
     cancel_worker(&WORKER_CANCEL);
     unsafe { destroy_hooks() };
@@ -538,7 +697,7 @@ unsafe fn update_display(initial: Option<Duration>) {
         Status::Moving => "Moving (Auto)",
     };
     let (status_changed, button_changed) = unsafe {
-        let status_changed = set_text(ui.status, status);
+        let status_changed = set_text(ui.status_badge, status);
         let button_changed = set_text(
             ui.button,
             if state_status == Status::Stopped {
@@ -552,34 +711,30 @@ unsafe fn update_display(initial: Option<Duration>) {
     unsafe {
         if status_changed {
             invalidate_ui(ui.lamp);
+            invalidate_ui(ui.status_badge);
         }
         if button_changed {
             invalidate_ui(ui.button);
         }
     }
-    let left = Duration::from_secs(180).saturating_sub(idle);
-    let info = format!("Idle: {}    In: {}", clock(idle), clock(left));
-    unsafe { set_text(ui.detail, &info) };
-    let countdown = if unsafe { SendMessageW(ui.check, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize
-    {
-        if done {
-            "Done".to_owned()
-        } else if let Some(d) = deadline {
-            clock(d.saturating_duration_since(Instant::now()))
-        } else if countdown_seconds(
-            unsafe { read_bounded(ui.hours, 999) },
-            unsafe { read_bounded(ui.minutes, 59) },
-            unsafe { read_bounded(ui.seconds, 59) },
-        ) == 0
-        {
-            "set > 00:00".to_owned()
-        } else {
-            "Ready".to_owned()
-        }
-    } else {
-        "Off".to_owned()
-    };
-    unsafe { set_text(ui.countdown, &format!("Stop countdown: {countdown}")) };
+    if unsafe { set_text(ui.idle_badge, &format!("IDLE {}", idle_clock(idle))) } {
+        unsafe { invalidate_ui(ui.idle_badge) };
+    }
+    let left = until_move(idle);
+    if unsafe { set_text(ui.in_time, &format!("In {}", clock(left))) } {
+        unsafe { invalidate_ui(ui.in_time) };
+    }
+    let checked = unsafe { SendMessageW(ui.check, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize;
+    let configured = countdown_seconds(
+        unsafe { read_bounded(ui.hours, 999) },
+        unsafe { read_bounded(ui.minutes, 59) },
+        unsafe { read_bounded(ui.seconds, 59) },
+    );
+    let remaining = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+    let caption = countdown_caption(checked, done, remaining, configured);
+    if unsafe { set_text(ui.check, &caption) } {
+        unsafe { invalidate_ui(ui.check) };
+    }
     let timer_needed = state_status != Status::Stopped || deadline.is_some();
     unsafe {
         if timer_needed && !TIMER_RUNNING {
@@ -600,6 +755,31 @@ fn clock(d: Duration) -> String {
     let sec = d.as_secs();
     format!("{:02}:{:02}", sec / 60, sec % 60)
 }
+fn idle_clock(d: Duration) -> String {
+    let sec = d.as_secs();
+    format!("{:02}:{:02}:{:02}", sec / 3600, sec / 60 % 60, sec % 60)
+}
+fn until_move(idle: Duration) -> Duration {
+    Duration::from_secs(180).saturating_sub(idle)
+}
+fn countdown_caption(
+    checked: bool,
+    done: bool,
+    remaining: Option<Duration>,
+    configured: u32,
+) -> String {
+    if !checked {
+        "Stop after".to_owned()
+    } else if done {
+        "Stop done".to_owned()
+    } else if let Some(remaining) = remaining {
+        format!("Stop {}", idle_clock(remaining))
+    } else if configured == 0 {
+        "Set > 00:00".to_owned()
+    } else {
+        "Stop ready".to_owned()
+    }
+}
 const fn rgb(r: u32, g: u32, b: u32) -> u32 {
     r | (g << 8) | (b << 16)
 }
@@ -608,12 +788,19 @@ unsafe fn init_theme_resources() -> bool {
     unsafe {
         BG_BRUSH = CreateSolidBrush(rgb(246, 248, 252));
         SURFACE_BRUSH = CreateSolidBrush(rgb(255, 255, 255));
-        PRIMARY_BRUSH = CreateSolidBrush(rgb(37, 99, 235));
-        PRESSED_BRUSH = CreateSolidBrush(rgb(29, 78, 216));
+        BUTTON_BORDER_BRUSH = CreateSolidBrush(rgb(13, 74, 185));
+        CHECK_BRUSH = CreateSolidBrush(rgb(37, 99, 235));
+        CHECK_HOT_BRUSH = CreateSolidBrush(rgb(232, 241, 255));
+        IDLE_BORDER_BRUSH = CreateSolidBrush(rgb(174, 202, 240));
         LAMP_BRUSHES = [
             CreateSolidBrush(rgb(128, 128, 128)),
             CreateSolidBrush(rgb(50, 205, 50)),
             CreateSolidBrush(rgb(255, 0, 0)),
+        ];
+        STATUS_BRUSHES = [
+            CreateSolidBrush(rgb(235, 238, 243)),
+            CreateSolidBrush(rgb(220, 247, 228)),
+            CreateSolidBrush(rgb(255, 228, 230)),
         ];
         let face = wide("Segoe UI");
         let font_height = |points: i32| -((points * DPI + 36) / 72);
@@ -637,32 +824,53 @@ unsafe fn init_theme_resources() -> bool {
         };
         FONTS = [
             font(10, FW_NORMAL as i32),
-            font(11, FW_SEMIBOLD as i32),
-            font(10, FW_NORMAL as i32),
+            font(12, FW_SEMIBOLD as i32),
+            font(11, FW_NORMAL as i32),
             font(10, FW_SEMIBOLD as i32),
+            font(10, FW_SEMIBOLD as i32),
+            font(12, FW_NORMAL as i32),
         ];
         !BG_BRUSH.is_null()
             && !SURFACE_BRUSH.is_null()
-            && !PRIMARY_BRUSH.is_null()
-            && !PRESSED_BRUSH.is_null()
+            && !BUTTON_BORDER_BRUSH.is_null()
+            && !CHECK_BRUSH.is_null()
+            && !CHECK_HOT_BRUSH.is_null()
+            && !IDLE_BORDER_BRUSH.is_null()
             && !LAMP_BRUSHES[0].is_null()
             && !LAMP_BRUSHES[1].is_null()
             && !LAMP_BRUSHES[2].is_null()
+            && !STATUS_BRUSHES[0].is_null()
+            && !STATUS_BRUSHES[1].is_null()
+            && !STATUS_BRUSHES[2].is_null()
             && !FONTS[0].is_null()
             && !FONTS[1].is_null()
             && !FONTS[2].is_null()
             && !FONTS[3].is_null()
+            && !FONTS[4].is_null()
+            && !FONTS[5].is_null()
     }
 }
 
 unsafe fn destroy_theme_resources() {
     unsafe {
-        for brush in [BG_BRUSH, SURFACE_BRUSH, PRIMARY_BRUSH, PRESSED_BRUSH] {
+        for brush in [
+            BG_BRUSH,
+            SURFACE_BRUSH,
+            BUTTON_BORDER_BRUSH,
+            CHECK_BRUSH,
+            CHECK_HOT_BRUSH,
+            IDLE_BORDER_BRUSH,
+        ] {
             if !brush.is_null() {
                 DeleteObject(brush as _);
             }
         }
         for brush in LAMP_BRUSHES {
+            if !brush.is_null() {
+                DeleteObject(brush as _);
+            }
+        }
+        for brush in STATUS_BRUSHES {
             if !brush.is_null() {
                 DeleteObject(brush as _);
             }
@@ -682,13 +890,44 @@ unsafe fn draw_primary_button(item: &DRAWITEMSTRUCT) {
         let radius = (12 * DPI + 48) / 96;
         let region =
             CreateRoundRectRgn(rect.left, rect.top, rect.right, rect.bottom, radius, radius);
-        let brush = if item.itemState & ODS_SELECTED != 0 {
-            PRESSED_BRUSH
+        let (top, bottom) = if item.itemState & ODS_SELECTED != 0 {
+            ((24, 101, 235), (16, 74, 190))
         } else {
-            PRIMARY_BRUSH
+            ((58, 137, 255), (27, 91, 222))
         };
         FillRect(item.hDC, &rect, BG_BRUSH);
-        FillRgn(item.hDC, region, brush);
+        SelectClipRgn(item.hDC, region);
+        let vertices = [
+            TRIVERTEX {
+                x: rect.left,
+                y: rect.top,
+                Red: top.0 << 8,
+                Green: top.1 << 8,
+                Blue: top.2 << 8,
+                Alpha: 0,
+            },
+            TRIVERTEX {
+                x: rect.right,
+                y: rect.bottom,
+                Red: bottom.0 << 8,
+                Green: bottom.1 << 8,
+                Blue: bottom.2 << 8,
+                Alpha: 0,
+            },
+        ];
+        let gradient = GRADIENT_RECT {
+            UpperLeft: 0,
+            LowerRight: 1,
+        };
+        GradientFill(
+            item.hDC,
+            vertices.as_ptr(),
+            vertices.len() as u32,
+            &gradient as *const _ as *const _,
+            1,
+            GRADIENT_FILL_RECT_V,
+        );
+        FrameRgn(item.hDC, region, BUTTON_BORDER_BRUSH, 2, 2);
         SelectObject(item.hDC, FONTS[1] as _);
         SetBkMode(item.hDC, TRANSPARENT as i32);
         SetTextColor(item.hDC, rgb(255, 255, 255));
@@ -710,6 +949,263 @@ unsafe fn draw_primary_button(item: &DRAWITEMSTRUCT) {
             focus.bottom -= 5;
             DrawFocusRect(item.hDC, &focus);
         }
+        RestoreDC(item.hDC, saved_dc);
+        DeleteObject(region as _);
+    }
+}
+
+unsafe fn draw_transparency_toggle(item: &DRAWITEMSTRUCT) {
+    unsafe {
+        let saved_dc = SaveDC(item.hDC);
+        let rect = item.rcItem;
+        let scale = |value| (value * DPI + 48) / 96;
+        FillRect(item.hDC, &rect, SURFACE_BRUSH);
+        let region = CreateRoundRectRgn(
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+            scale(6),
+            scale(6),
+        );
+        FrameRgn(
+            item.hDC,
+            region,
+            if BACKGROUND_TRANSPARENT {
+                CHECK_BRUSH
+            } else {
+                IDLE_BORDER_BRUSH
+            },
+            scale(if item.itemState & ODS_SELECTED != 0 {
+                2
+            } else {
+                1
+            }),
+            scale(if item.itemState & ODS_SELECTED != 0 {
+                2
+            } else {
+                1
+            }),
+        );
+        DeleteObject(region as _);
+
+        let offset = if item.itemState & ODS_SELECTED != 0 {
+            scale(1)
+        } else {
+            0
+        };
+        let side = scale(16);
+        let cell = (side / 4).max(1);
+        let left = rect.left + (rect.right - rect.left - side) / 2 + offset;
+        let top = rect.top + (rect.bottom - rect.top - side) / 2 + offset;
+        for row in 0..4 {
+            for column in 0..4 {
+                let cell_rect = RECT {
+                    left: left + column * cell,
+                    top: top + row * cell,
+                    right: left + (column + 1) * cell,
+                    bottom: top + (row + 1) * cell,
+                };
+                FillRect(
+                    item.hDC,
+                    &cell_rect,
+                    if (row + column) % 2 == 0 {
+                        SURFACE_BRUSH
+                    } else {
+                        BUTTON_BORDER_BRUSH
+                    },
+                );
+            }
+        }
+        if item.itemState & ODS_FOCUS != 0 {
+            let mut focus = rect;
+            focus.left += scale(3);
+            focus.top += scale(3);
+            focus.right -= scale(3);
+            focus.bottom -= scale(3);
+            DrawFocusRect(item.hDC, &focus);
+        }
+        RestoreDC(item.hDC, saved_dc);
+    }
+}
+
+unsafe fn draw_status_badge(item: &DRAWITEMSTRUCT) {
+    let (index, text_color) = STATE.with(|s| match s.borrow().status {
+        Status::Stopped => (0, rgb(82, 91, 105)),
+        Status::Monitoring => (1, rgb(22, 101, 52)),
+        Status::Moving => (2, rgb(185, 28, 28)),
+    });
+    unsafe {
+        draw_badge(
+            item,
+            STATUS_BRUSHES[index],
+            std::ptr::null_mut(),
+            text_color,
+            FONTS[3],
+        )
+    };
+}
+
+unsafe fn draw_idle_badge(item: &DRAWITEMSTRUCT) {
+    unsafe {
+        draw_badge(
+            item,
+            SURFACE_BRUSH,
+            IDLE_BORDER_BRUSH,
+            rgb(23, 50, 91),
+            FONTS[4],
+        )
+    };
+}
+
+unsafe fn draw_stop_checkbox(item: &NMCUSTOMDRAW) {
+    unsafe {
+        let saved_dc = SaveDC(item.hdc);
+        let rect = item.rc;
+        let scale = |value: i32| (value * DPI + 48) / 96;
+        let checked = SendMessageW(item.hdr.hwndFrom, BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
+        let disabled = item.uItemState & CDIS_DISABLED != 0;
+        let selected = item.uItemState & CDIS_SELECTED != 0;
+        let hot = item.uItemState & CDIS_HOT != 0;
+        FillRect(
+            item.hdc,
+            &rect,
+            if BACKGROUND_TRANSPARENT {
+                SURFACE_BRUSH
+            } else {
+                BG_BRUSH
+            },
+        );
+
+        let size = scale(20);
+        let left = rect.left + scale(2);
+        let top = rect.top + (rect.bottom - rect.top - size) / 2;
+        let box_rect = RECT {
+            left,
+            top,
+            right: left + size,
+            bottom: top + size,
+        };
+        let radius = scale(5);
+        let region = CreateRoundRectRgn(
+            box_rect.left,
+            box_rect.top,
+            box_rect.right,
+            box_rect.bottom,
+            radius,
+            radius,
+        );
+        let fill = if checked {
+            if selected {
+                BUTTON_BORDER_BRUSH
+            } else {
+                CHECK_BRUSH
+            }
+        } else if hot {
+            CHECK_HOT_BRUSH
+        } else {
+            SURFACE_BRUSH
+        };
+        FillRgn(item.hdc, region, fill);
+        FrameRgn(
+            item.hdc,
+            region,
+            if disabled {
+                STATUS_BRUSHES[0]
+            } else {
+                BUTTON_BORDER_BRUSH
+            },
+            scale(1),
+            scale(1),
+        );
+        DeleteObject(region as _);
+
+        if checked {
+            let points = [
+                POINT {
+                    x: left + scale(4),
+                    y: top + scale(10),
+                },
+                POINT {
+                    x: left + scale(8),
+                    y: top + scale(14),
+                },
+                POINT {
+                    x: left + scale(16),
+                    y: top + scale(5),
+                },
+            ];
+            let pen = CreatePen(
+                PS_SOLID,
+                scale(2).max(1),
+                if disabled {
+                    rgb(225, 225, 225)
+                } else {
+                    rgb(255, 255, 255)
+                },
+            );
+            let old_pen = SelectObject(item.hdc, pen as _);
+            Polyline(item.hdc, points.as_ptr(), points.len() as i32);
+            SelectObject(item.hdc, old_pen);
+            DeleteObject(pen as _);
+        }
+
+        SelectObject(item.hdc, FONTS[5] as _);
+        SetBkMode(item.hdc, TRANSPARENT as i32);
+        SetTextColor(
+            item.hdc,
+            if disabled {
+                rgb(152, 162, 179)
+            } else {
+                rgb(23, 32, 51)
+            },
+        );
+        let mut text = [0u16; 64];
+        let len = GetWindowTextW(item.hdr.hwndFrom, text.as_mut_ptr(), text.len() as i32);
+        let mut text_rect = rect;
+        text_rect.left = box_rect.right + scale(7);
+        DrawTextW(
+            item.hdc,
+            text.as_ptr(),
+            len,
+            &mut text_rect,
+            DT_VCENTER | DT_SINGLELINE,
+        );
+        if item.uItemState & CDIS_FOCUS != 0 {
+            let mut focus = rect;
+            focus.left += scale(1);
+            focus.top += scale(1);
+            focus.right -= scale(1);
+            focus.bottom -= scale(1);
+            DrawFocusRect(item.hdc, &focus);
+        }
+        RestoreDC(item.hdc, saved_dc);
+    }
+}
+
+unsafe fn draw_badge(item: &DRAWITEMSTRUCT, fill: HBRUSH, border: HBRUSH, color: u32, font: HFONT) {
+    unsafe {
+        let saved_dc = SaveDC(item.hDC);
+        let r = item.rcItem;
+        let region = CreateRoundRectRgn(r.left, r.top, r.right, r.bottom, 10, 10);
+        FillRect(item.hDC, &r, BG_BRUSH);
+        FillRgn(item.hDC, region, fill);
+        if !border.is_null() {
+            FrameRgn(item.hDC, region, border, 1, 1);
+        }
+        SelectObject(item.hDC, font as _);
+        SetBkMode(item.hDC, TRANSPARENT as i32);
+        SetTextColor(item.hDC, color);
+        let mut text = [0u16; 64];
+        let len = GetWindowTextW(item.hwndItem, text.as_mut_ptr(), text.len() as i32);
+        let mut text_rect = r;
+        DrawTextW(
+            item.hDC,
+            text.as_ptr(),
+            len,
+            &mut text_rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
         RestoreDC(item.hDC, saved_dc);
         DeleteObject(region as _);
     }
@@ -922,8 +1418,8 @@ fn main() {
         let mut rect = RECT {
             left: 0,
             top: 0,
-            right: sc(290),
-            bottom: sc(148),
+            right: sc(340),
+            bottom: sc(130),
         };
         AdjustWindowRectEx(&mut rect, style, 0, WS_EX_TOPMOST);
         let wc = WNDCLASSW {
@@ -997,6 +1493,31 @@ unsafe fn startup_error(api: &str, code: u32) {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, GetDC, GetPixel, ReleaseDC,
+    };
+
+    #[test]
+    fn idle_clock_and_move_countdown_show_hours_and_clamp_at_three_minutes() {
+        assert_eq!(idle_clock(Duration::ZERO), "00:00:00");
+        assert_eq!(idle_clock(Duration::from_secs(3600)), "01:00:00");
+        assert_eq!(idle_clock(Duration::from_secs(360_001)), "100:00:01");
+        assert_eq!(clock(until_move(Duration::from_secs(179))), "00:01");
+        assert_eq!(clock(until_move(Duration::from_secs(180))), "00:00");
+        assert_eq!(clock(until_move(Duration::from_secs(181))), "00:00");
+    }
+
+    #[test]
+    fn countdown_feedback_is_compact_and_covers_enabled_states() {
+        assert_eq!(countdown_caption(false, false, None, 10_800), "Stop after");
+        assert_eq!(countdown_caption(true, false, None, 10_800), "Stop ready");
+        assert_eq!(countdown_caption(true, false, None, 0), "Set > 00:00");
+        assert_eq!(
+            countdown_caption(true, false, Some(Duration::from_secs(10_800)), 10_800),
+            "Stop 03:00:00"
+        );
+        assert_eq!(countdown_caption(true, true, None, 10_800), "Stop done");
+    }
 
     type SubclassProc =
         Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM, usize, usize) -> LRESULT>;
@@ -1071,8 +1592,8 @@ mod tests {
                 WS_POPUP,
                 0,
                 0,
-                290,
-                148,
+                340,
+                130,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -1085,7 +1606,15 @@ mod tests {
             update_display(Some(Duration::ZERO));
 
             let ui = UI.unwrap();
-            let controls = [ui.button, ui.lamp, ui.status, ui.detail, ui.countdown];
+            let controls = [
+                ui.button,
+                ui.background_toggle,
+                ui.lamp,
+                ui.status_badge,
+                ui.idle_badge,
+                ui.in_time,
+                ui.check,
+            ];
             let writes = AtomicUsize::new(0);
             let subclass: SubclassProc = Some(count_text_writes);
             for (id, control) in controls.iter().enumerate() {
@@ -1106,6 +1635,36 @@ mod tests {
             assert_eq!(writes.load(Ordering::SeqCst), 0);
             assert_eq!(TEST_UI_INVALIDATIONS.load(Ordering::SeqCst), 0);
 
+            let screen = GetDC(std::ptr::null_mut());
+            assert!(!screen.is_null());
+            let memory = CreateCompatibleDC(screen);
+            assert!(!memory.is_null());
+            let bitmap = CreateCompatibleBitmap(screen, 142, 26);
+            assert!(!bitmap.is_null());
+            let original = SelectObject(memory, bitmap as _);
+            let mut draw: NMCUSTOMDRAW = std::mem::zeroed();
+            draw.hdr.hwndFrom = ui.check;
+            draw.hdc = memory;
+            draw.rc = RECT {
+                left: 0,
+                top: 0,
+                right: 142,
+                bottom: 26,
+            };
+            SendMessageW(ui.check, BM_SETCHECK, BST_CHECKED as usize, 0);
+            draw.uItemState = CDIS_HOT;
+            draw_stop_checkbox(&draw);
+            assert_eq!(GetPixel(memory, 5, 7), rgb(37, 99, 235));
+            assert_eq!(GetPixel(memory, 10, 17), rgb(255, 255, 255));
+            SendMessageW(ui.check, BM_SETCHECK, 0, 0);
+            draw.uItemState = windows_sys::Win32::UI::Controls::CDIS_CHECKED;
+            draw_stop_checkbox(&draw);
+            assert_eq!(GetPixel(memory, 5, 7), rgb(255, 255, 255));
+            SelectObject(memory, original);
+            DeleteObject(bitmap as _);
+            DeleteDC(memory);
+            ReleaseDC(std::ptr::null_mut(), screen);
+
             for (id, control) in controls.iter().enumerate() {
                 RemoveWindowSubclass(*control, subclass, id + 1);
             }
@@ -1115,6 +1674,46 @@ mod tests {
             DestroyWindow(host);
             UI = None;
             destroy_theme_resources();
+        }
+    }
+
+    #[test]
+    fn background_transparency_uses_color_key_and_restores_window_style() {
+        unsafe {
+            let class = wide("STATIC");
+            let host = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                wide("").as_ptr(),
+                WS_POPUP,
+                0,
+                0,
+                10,
+                10,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!host.is_null());
+            let original = GetWindowLongPtrW(host, GWL_EXSTYLE);
+            apply_background_mode(host, true).unwrap();
+            assert_ne!(
+                GetWindowLongPtrW(host, GWL_EXSTYLE) & WS_EX_LAYERED as isize,
+                0
+            );
+            let mut key = 0;
+            let mut alpha = 0;
+            let mut flags = 0;
+            assert_ne!(
+                GetLayeredWindowAttributes(host, &mut key, &mut alpha, &mut flags),
+                0
+            );
+            assert_eq!(key, BACKGROUND_COLOR);
+            assert_eq!(flags, LWA_COLORKEY);
+            apply_background_mode(host, false).unwrap();
+            assert_eq!(GetWindowLongPtrW(host, GWL_EXSTYLE), original);
+            DestroyWindow(host);
         }
     }
 }

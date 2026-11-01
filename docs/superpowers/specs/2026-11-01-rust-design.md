@@ -19,14 +19,25 @@ and paint labels on a consistent light background. Keep real native controls,
 keyboard focus feedback and existing accessible labels. Use GDI for the blue
 button and status indicator; add no GUI framework or runtime dependency.
 
-The window must be small and tightly arranged in at
-most five rows, only slightly taller than the original 290×138 client. Target
-290×148: Start/Stop (40 px high); status and idle information on one line in
-different colors; countdown checkbox with h/m/s fields; countdown result.
-Use four rows, within the five-row maximum. Remove the large in-window title, subtitle
-and divider. Keep Segoe UI and the blue primary action.
-Use 10pt body/status/field text and 11pt button text after the user's request for
-larger lettering. Label the compact checkbox "Stop after" to fit without clipping.
+The compact client is 340×130 and contains three rows, following the user's
+reference: a 40px-high blue gradient Start/Stop button with a background icon;
+a round lamp, Status label and colored state badge, IDLE HH:MM:SS and In MM:SS;
+then the stop checkbox and h/m/s inputs. In begins at 03:00 and clamps at zero.
+There is no separate title, subtitle or fourth countdown row.
+
+Use 10pt body/status/IDLE text, 11pt duration fields, and 12pt button text.
+The stop checkbox has a 20px glyph and 12pt normal-weight caption, while remaining
+a real BS_AUTOCHECKBOX with native keyboard and accessibility behavior. Its caption
+shows Stop after, Stop HH:MM:SS, Stop ready, Set > 00:00 or Stop done as appropriate.
+Read the checked state from BM_GETCHECK when painting; do not infer it from custom
+draw notification flags.
+
+A keyboard-accessible checkerboard button switches background transparency using
+WS_EX_LAYERED and a native color key. Buttons, badges, inputs and text backplates
+remain opaque and clickable. Changing the background must not change monitoring,
+countdown or numeric values. The normal background is restored on the next click.
+After verification, replace the existing v1.0.2 tag and release assets as explicitly
+requested, retaining the same public download URLs.
 
 Mouse input must update inactivity/cancellation immediately without forcing a
 paint for every event. Refresh text only when it changes, redraw indicators only

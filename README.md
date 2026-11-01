@@ -2,7 +2,7 @@
 
 A pure Rust mouse movement tool using native Win32 controls. Runs directly without .NET or a bundled GUI runtime.
 
-The Rust build is about 345 KB; local warm startup was about 10× faster than the
+The Rust build is about 349 KB; local warm startup was about 10× faster than the
 previous C# standalone release. See [measurements and verification](docs/rust-migration-results.md).
 
 ![Light native Windows interface](docs/ui-rust-light.png)
@@ -18,7 +18,8 @@ Download `MouseMoverApp.exe` from [Releases](https://github.com/yaosio232/mouse_
 
 ## Additional features
 
-- **Stop after** is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Done and stops completely. It is disabled by default, with a preset of 3 hours / 0 minutes / 0 seconds.
+- **Stop after** is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Stop done and stops completely. It is disabled by default, with a preset of 3 hours / 0 minutes / 0 seconds.
+- The checkerboard icon toggles background transparency; controls remain opaque and clickable.
 - Closing the window stops the app. There is no background service, saved settings, or network functionality.
 
 ## Build and publish
@@ -57,7 +58,8 @@ The publish directory `artifacts/release` contains `MouseMoverApp.exe` and Engli
 
 ### 額外功能
 
-- **Stop after** 是獨立的停止倒數；勾選／修改時長立即重新計時，Start 時也重新計時，到期顯示 Done 並完全停止。預設未勾選，3 小時／0 分鐘／0 秒。
+- **Stop after** 是獨立的停止倒數；勾選／修改時長立即重新計時，Start 時也重新計時，到期顯示 Stop done 並完全停止。預設未勾選，3 小時／0 分鐘／0 秒。
+- 棋盤格圖示可切換透明背景；控制項保持不透明且可操作。
 - 關閉視窗即停止；沒有背景服務、設定儲存或網路功能。
 
 ### 建置與發佈
