@@ -9,39 +9,49 @@ does not need .NET, a WebView, or third-party runtime DLLs.
 | Measurement | C# v1.0.1 | Rust |
 | --- | ---: | ---: |
 | EXE bytes | 71,855,237 | 345,088 |
-| Warm startup median | 224.17 ms | 23.18 ms |
+| Warm startup median | 211.06 ms | 22.78 ms |
 
-EXE size fell **99.52%**. Warm startup was **9.7× faster** on this machine.
+EXE size fell **99.52%**. Warm startup was **9.3× faster** on this machine.
 These are warm process launches, not cold boot or first-download measurements:
 one warmup per executable, then ten launches each in alternating order, measuring
 process start until its main window is visible. Measurements include PowerShell
 `Start-Process` overhead and can vary with Windows, hardware and antivirus state.
 
 Raw samples and hashes: `artifacts/startup-benchmark.json`.
-The final Rust EXE is `artifacts/rust-release/MouseMoverApp.exe`.
-SHA-256: `661ef82e5c03cd921a017d7a8ec1780ac35cab6766dee83f1c92a92b29456ed5`.
+The final Rust EXE is `artifacts/compact-release/MouseMoverApp.exe`.
+SHA-256: `df2b511382bc18da594aa362343b5e1f32df544cbd21482b9d68858e8466686e`.
 
 The light UI uses DPI-scaled Segoe UI, a blue native owner-drawn action button,
-a status dot with text, and aligned hours/minutes/seconds fields. Preview:
+a status dot with text, and inline hours/minutes/seconds fields. The 290×148
+client has four rows: a 40px-high button, state-colored status with gray idle/time,
+"Stop after" plus duration fields, and the countdown result. Body text is 10pt;
+the button is 11pt. Preview:
 
 ![Light native Windows interface](ui-rust-light.png)
 
 ## Verification
 
 - `cargo fmt --check`: passed.
-- `cargo test --locked`: ten passed, zero failed. Includes the complete 446-point
+- `cargo test --locked`: twelve passed, zero failed (ten core, two native UI).
+  Includes the complete 446-point
   path fixture generated from the old C# release implementation, idle/countdown
   transitions, hours/minutes/seconds conversion, injected-input flag filtering and
   worker cancellation replacement.
+- Native regression: 100 monitoring input events advance the input timestamp
+  without text writes or control invalidations. A Win32 subclass also verifies
+  duplicate text is not rewritten. Restoring the old unconditional refresh caused
+  the regression to fail before restoring the fix.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `scripts/publish.ps1 -OutputDirectory artifacts/rust-release`: passed; standalone
+- `scripts/publish.ps1 -OutputDirectory artifacts/compact-release`: passed; standalone
   EXE, two UTF-8 instruction TXT files, and SHA-256 output produced.
-- `scripts/check-ui.ps1 -Executable artifacts/rust-release/MouseMoverApp.exe`:
+- `scripts/check-ui.ps1 -Executable artifacts/compact-release/MouseMoverApp.exe`:
   passed. Checks topmost fixed window, 3/0/0 defaults, all three spinner buddies/ranges,
   Start/Stop, hours affecting countdown, countdown before Start, restart, zero
-  duration and global F10.
+  duration and global F10. Also checks compact client bounds, four rows, shared
+  status/time row, inline duration fields, and the taller primary button.
 - Native render captured and visually inspected for readable text, unclipped
-  bounds, consistent light backgrounds and aligned duration fields.
+  bounds, consistent light backgrounds and aligned duration fields, including
+  `999h 59m 59s` at the enlarged font size.
 - PE import inspection: x64 Windows GUI subsystem; only Windows system DLLs
   (`kernel32`, `msvcrt`, `ntdll`, synchronization API set, `comctl32`, `gdi32`, `user32`).
 

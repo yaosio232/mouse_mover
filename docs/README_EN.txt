@@ -13,7 +13,7 @@ Download MouseMoverApp.exe from https://github.com/yaosio232/mouse_mover/release
 
 Additional features
 
-- Stop countdown is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Done and stops completely. It is disabled by default, with a preset of 3 hours / 0 minutes / 0 seconds.
+- Stop after is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Done and stops completely. It is disabled by default, with a preset of 3 hours / 0 minutes / 0 seconds.
 - Closing the window stops the app. There is no background service, saved settings, or network functionality.
 
 Build and publish

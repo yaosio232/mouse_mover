@@ -10,6 +10,9 @@ using System.Runtime.InteropServices;
 public static class NativeUiCheck {
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern int MapWindowPoints(IntPtr from, IntPtr to, ref Rect rect, uint points);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
@@ -47,6 +50,33 @@ try {
     $seconds = [NativeUiCheck]::GetDlgItem($window,105)
     $hours = [NativeUiCheck]::GetDlgItem($window,111)
     $label = [NativeUiCheck]::GetDlgItem($window,110)
+    $client = [NativeUiCheck+Rect]::new()
+    Require ([NativeUiCheck]::GetClientRect($window,[ref]$client)) 'No client bounds'
+    $scale = [NativeUiCheck]::GetDpiForWindow($window)/96.0
+    Require (($client.Right/$scale) -le 300 -and ($client.Bottom/$scale) -le 170) 'Window must stay near original size (max 300 x 170 logical pixels)'
+    $rows = @()
+    foreach ($id in @(100,102,103,110)) {
+        $handle = [NativeUiCheck]::GetDlgItem($window,$id)
+        $bounds = [NativeUiCheck+Rect]::new()
+        Require ($handle -ne 0 -and [NativeUiCheck]::GetWindowRect($handle,[ref]$bounds)) "Missing row control $id"
+        $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$bounds,2)
+        Require ($bounds.Left -ge 0 -and $bounds.Top -ge 0 -and $bounds.Right -le $client.Right -and $bounds.Bottom -le $client.Bottom) "Row $id is clipped"
+        if ($id -eq 100) { Require (($bounds.Bottom-$bounds.Top)/$scale -ge 39) 'Primary button must be at least 40 logical pixels high' }
+        $rows += $bounds.Top
+    }
+    Require (@($rows | Sort-Object -Unique).Count -eq 4) 'Expected four compact rows'
+    $detailBounds = [NativeUiCheck+Rect]::new()
+    Require ([NativeUiCheck]::GetWindowRect([NativeUiCheck]::GetDlgItem($window,114),[ref]$detailBounds)) 'Missing idle information'
+    $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$detailBounds,2)
+    Require ([Math]::Abs($detailBounds.Top-$rows[1]) -le 3*$scale) 'Status and time must share a row'
+    Require ($detailBounds.Right -le $client.Right -and $detailBounds.Bottom -le $client.Bottom) 'Idle information is clipped'
+    foreach ($handle in @($hours,$minutes,$seconds)) {
+        $bounds = [NativeUiCheck+Rect]::new()
+        Require ([NativeUiCheck]::GetWindowRect($handle,[ref]$bounds)) 'Missing duration field bounds'
+        $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$bounds,2)
+        Require ([Math]::Abs($bounds.Top-$rows[2]) -le 3*$scale) 'Duration fields must share the checkbox row'
+        Require ($bounds.Right -le $client.Right -and $bounds.Bottom -le $client.Bottom) 'Duration field is clipped'
+    }
     Require ((Text $button) -eq 'Start (F10)') 'Startup button differs'
     Require ((Text $hours) -eq '3' -and (Text $minutes) -eq '0' -and (Text $seconds) -eq '0') 'Default duration differs'
     Require ((Text $label) -eq 'Stop countdown: Off') 'Countdown not initially off'
