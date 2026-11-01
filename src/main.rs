@@ -16,16 +16,18 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        CreateSolidBrush, GetStockObject, InvalidateRect, SetBkColor, UpdateWindow,
-        DEFAULT_GUI_FONT, HBRUSH, HDC, WHITE_BRUSH,
+        CreateEllipticRgn, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject,
+        DrawFocusRect, DrawTextW, FillRect, FillRgn, InvalidateRect, RestoreDC, SaveDC,
+        SelectObject, SetBkColor, SetBkMode, SetTextColor, UpdateWindow, DT_CENTER, DT_SINGLELINE,
+        DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, OPAQUE, TRANSPARENT,
     },
     System::LibraryLoader::GetModuleHandleW,
     System::SystemInformation::GetTickCount,
-    System::SystemServices::{SS_LEFT, SS_NOTIFY},
+    System::SystemServices::{SS_CENTER, SS_LEFT, SS_OWNERDRAW},
     UI::{
         Controls::{
-            InitCommonControls, BST_CHECKED, UDM_SETBUDDY, UDM_SETPOS32, UDM_SETRANGE32,
-            UDS_ALIGNRIGHT, UDS_ARROWKEYS, UDS_SETBUDDYINT,
+            InitCommonControls, BST_CHECKED, DRAWITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, UDM_SETBUDDY,
+            UDM_SETPOS32, UDM_SETRANGE32, UDS_ALIGNRIGHT, UDS_ARROWKEYS, UDS_SETBUDDYINT,
         },
         HiDpi::GetDpiForSystem,
         Input::KeyboardAndMouse::{
@@ -54,6 +56,7 @@ struct Ui {
     button: HWND,
     lamp: HWND,
     status: HWND,
+    detail: HWND,
     check: HWND,
     hours: HWND,
     minutes: HWND,
@@ -62,13 +65,19 @@ struct Ui {
 }
 static mut UI: Option<Ui> = None;
 static mut LAMP_BRUSHES: [HBRUSH; 3] = [std::ptr::null_mut(); 3];
+static mut BG_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut SURFACE_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut DIVIDER_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut PRIMARY_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut PRESSED_BRUSH: HBRUSH = std::ptr::null_mut();
+static mut FONTS: [HFONT; 5] = [std::ptr::null_mut(); 5];
 thread_local! { static STATE: RefCell<ActivityState> = RefCell::new(ActivityState::new(Instant::now())); }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
             unsafe {
-                if !create_controls(hwnd) {
+                if !init_theme_resources() || !create_controls(hwnd) {
                     message("Unable to create the application controls.");
                     return -1;
                 }
@@ -118,6 +127,30 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             0
         }
+        WM_ERASEBKGND => {
+            unsafe {
+                let mut rect = RECT::default();
+                GetClientRect(hwnd, &mut rect);
+                FillRect(wp as HDC, &rect, BG_BRUSH);
+            }
+            1
+        }
+        WM_DRAWITEM => {
+            if lp != 0 {
+                let item = unsafe { &*(lp as *const DRAWITEMSTRUCT) };
+                unsafe {
+                    if item.CtlID == 100 {
+                        draw_primary_button(item);
+                        return 1;
+                    }
+                    if item.CtlID == 101 {
+                        draw_status_dot(item);
+                        return 1;
+                    }
+                }
+            }
+            0
+        }
         val if val == WM_APP + 3 => {
             unsafe {
                 stop(false);
@@ -134,26 +167,34 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             0
         }
         WM_CTLCOLORSTATIC => {
-            if let Some(ui) = unsafe { UI } {
-                if lp as HWND == ui.lamp {
-                    let status = STATE.with(|s| match s.borrow().status {
-                        Status::Stopped => 0,
-                        Status::Monitoring => 1,
-                        Status::Moving => 2,
-                    });
-                    let (brush, color) = match status {
-                        1 => (unsafe { LAMP_BRUSHES[1] }, rgb(50, 205, 50)),
-                        2 => (unsafe { LAMP_BRUSHES[2] }, rgb(255, 0, 0)),
-                        _ => (unsafe { LAMP_BRUSHES[0] }, rgb(128, 128, 128)),
-                    };
-                    unsafe {
-                        SetBkColor(wp as HDC, color);
-                    }
-                    return brush as LRESULT;
+            let id = unsafe { GetDlgCtrlID(lp as HWND) };
+            let color = match id {
+                115 | 102 => rgb(23, 32, 51),
+                116 | 114 => rgb(102, 112, 133),
+                _ => rgb(71, 84, 103),
+            };
+            unsafe {
+                SetTextColor(wp as HDC, color);
+                if id == 117 {
+                    SetBkColor(wp as HDC, rgb(226, 232, 240));
+                    SetBkMode(wp as HDC, OPAQUE as i32);
+                    DIVIDER_BRUSH as LRESULT
+                } else {
+                    SetBkMode(wp as HDC, TRANSPARENT as i32);
+                    BG_BRUSH as LRESULT
                 }
             }
-            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
         }
+        WM_CTLCOLOREDIT => unsafe {
+            SetTextColor(wp as HDC, rgb(23, 32, 51));
+            SetBkColor(wp as HDC, rgb(255, 255, 255));
+            SURFACE_BRUSH as LRESULT
+        },
+        WM_CTLCOLORBTN => unsafe {
+            SetTextColor(wp as HDC, rgb(23, 32, 51));
+            SetBkMode(wp as HDC, TRANSPARENT as i32);
+            BG_BRUSH as LRESULT
+        },
         WM_CLOSE => {
             unsafe {
                 stop(false);
@@ -169,6 +210,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 PostQuitMessage(0);
             }
             0
+        }
+        WM_NCDESTROY => {
+            let result = unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
+            unsafe {
+                destroy_theme_resources();
+                UI = None;
+            }
+            result
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
@@ -196,54 +245,65 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
                     std::ptr::null(),
                 );
                 if !control.is_null() {
-                    SendMessageW(
-                        control,
-                        WM_SETFONT,
-                        GetStockObject(DEFAULT_GUI_FONT) as usize,
-                        1,
-                    );
+                    SendMessageW(control, WM_SETFONT, FONTS[0] as usize, 1);
                 }
                 control
             };
         let button = make(
             "BUTTON",
             "Start (F10)",
-            BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            8,
-            8,
-            274,
-            35,
+            BS_OWNERDRAW as u32 | WS_TABSTOP,
+            20,
+            137,
+            300,
+            44,
             100,
         );
-        let lamp = make("STATIC", " ", SS_LEFT | SS_NOTIFY, 8, 52, 12, 12, 101);
-        let status = make(
+        let title = make("STATIC", "AZu Sanpo", SS_LEFT, 20, 15, 300, 30, 115);
+        let subtitle = make(
             "STATIC",
-            "Not Started    Idle: 00:00  In: 03:00",
+            "Mouse movement, quietly.",
             SS_LEFT,
-            26,
-            48,
-            256,
+            20,
+            47,
+            300,
             18,
-            102,
+            116,
+        );
+        let lamp = make("STATIC", "", SS_OWNERDRAW, 20, 83, 12, 12, 101);
+        let status = make("STATIC", "Not Started", SS_LEFT, 42, 79, 278, 22, 102);
+        let detail = make(
+            "STATIC",
+            "Idle: 00:00    In: 03:00",
+            SS_LEFT,
+            20,
+            103,
+            300,
+            18,
+            114,
         );
         let check = make(
             "BUTTON",
             "Stop countdown",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            8,
-            78,
-            111,
-            25,
+            20,
+            210,
+            300,
+            24,
             103,
         );
+        let divider = make("STATIC", "", SS_LEFT, 20, 198, 300, 1, 117);
+        let hour_label = make("STATIC", "Hours", SS_CENTER, 20, 241, 92, 18, 118);
+        let min_label = make("STATIC", "Minutes", SS_CENTER, 124, 241, 92, 18, 119);
+        let sec_label_text = make("STATIC", "Seconds", SS_CENTER, 228, 241, 92, 18, 120);
         let hours = make(
             "EDIT",
             "3",
-            WS_BORDER | WS_TABSTOP | ES_NUMBER as u32,
-            38,
-            106,
-            42,
-            23,
+            WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
+            20,
+            262,
+            92,
+            34,
             111,
         );
         let uphour = make(
@@ -256,9 +316,23 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
             0,
             112,
         );
-        if [button, lamp, status, check, hours, uphour]
-            .iter()
-            .any(|control| control.is_null())
+        if [
+            button,
+            title,
+            subtitle,
+            lamp,
+            status,
+            detail,
+            check,
+            divider,
+            hour_label,
+            min_label,
+            sec_label_text,
+            hours,
+            uphour,
+        ]
+        .iter()
+        .any(|control| control.is_null())
         {
             return false;
         }
@@ -268,11 +342,11 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
         let minutes = make(
             "EDIT",
             "0",
-            WS_BORDER | WS_TABSTOP | ES_NUMBER as u32,
-            120,
-            106,
-            42,
-            23,
+            WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
+            124,
+            262,
+            92,
+            34,
             104,
         );
         let upmin = make(
@@ -293,11 +367,11 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
         let sec_edit = make(
             "EDIT",
             "0",
-            WS_BORDER | WS_TABSTOP | ES_NUMBER as u32,
-            202,
-            106,
-            42,
-            23,
+            WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
+            228,
+            262,
+            92,
+            34,
             105,
         );
         let upsec = make(
@@ -315,42 +389,37 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
         }
         SendMessageW(upsec, UDM_SETBUDDY, sec_edit as usize, 0);
         SendMessageW(upsec, UDM_SETRANGE32, 0, 59);
-        let hour_label = make("STATIC", "h", SS_LEFT, 82, 110, 20, 20, 113);
-        let min_label = make("STATIC", "min", SS_LEFT, 164, 110, 32, 20, 108);
-        let sec_label_text = make("STATIC", "sec", SS_LEFT, 246, 110, 30, 20, 109);
         let countdown = make(
             "STATIC",
             "Stop countdown: Off",
             SS_LEFT,
-            8,
-            140,
-            274,
-            18,
+            20,
+            309,
+            300,
+            19,
             110,
         );
-        if hour_label.is_null()
-            || min_label.is_null()
-            || sec_label_text.is_null()
-            || countdown.is_null()
-        {
+        if countdown.is_null() {
             return false;
+        }
+        SendMessageW(title, WM_SETFONT, FONTS[1] as usize, 1);
+        SendMessageW(status, WM_SETFONT, FONTS[2] as usize, 1);
+        SendMessageW(subtitle, WM_SETFONT, FONTS[3] as usize, 1);
+        for edit in [hours, minutes, sec_edit] {
+            SendMessageW(edit, WM_SETFONT, FONTS[4] as usize, 1);
         }
         UI = Some(Ui {
             hwnd,
             button,
             lamp,
             status,
+            detail,
             check,
             hours,
             minutes,
             seconds: sec_edit,
             countdown,
         });
-        LAMP_BRUSHES = [
-            CreateSolidBrush(rgb(128, 128, 128)),
-            CreateSolidBrush(rgb(50, 205, 50)),
-            CreateSolidBrush(rgb(255, 0, 0)),
-        ];
     }
     true
 }
@@ -469,6 +538,7 @@ unsafe fn update_display(initial: Option<Duration>) {
         Status::Moving => "Moving (Auto)",
     };
     unsafe {
+        set_text(ui.status, status);
         set_text(
             ui.button,
             if state_status == Status::Stopped {
@@ -480,10 +550,11 @@ unsafe fn update_display(initial: Option<Duration>) {
     }
     unsafe {
         InvalidateRect(ui.lamp, std::ptr::null(), 1);
+        InvalidateRect(ui.button, std::ptr::null(), 1);
     }
     let left = Duration::from_secs(180).saturating_sub(idle);
-    let info = format!("{status}    Idle: {}  In: {}", clock(idle), clock(left));
-    unsafe { set_text(ui.status, &info) };
+    let info = format!("Idle: {}    In: {}", clock(idle), clock(left));
+    unsafe { set_text(ui.detail, &info) };
     let countdown = if unsafe { SendMessageW(ui.check, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize
     {
         if done {
@@ -521,6 +592,197 @@ fn clock(d: Duration) -> String {
 }
 const fn rgb(r: u32, g: u32, b: u32) -> u32 {
     r | (g << 8) | (b << 16)
+}
+
+unsafe fn init_theme_resources() -> bool {
+    unsafe {
+        BG_BRUSH = CreateSolidBrush(rgb(246, 248, 252));
+        SURFACE_BRUSH = CreateSolidBrush(rgb(255, 255, 255));
+        DIVIDER_BRUSH = CreateSolidBrush(rgb(226, 232, 240));
+        PRIMARY_BRUSH = CreateSolidBrush(rgb(37, 99, 235));
+        PRESSED_BRUSH = CreateSolidBrush(rgb(29, 78, 216));
+        LAMP_BRUSHES = [
+            CreateSolidBrush(rgb(128, 128, 128)),
+            CreateSolidBrush(rgb(50, 205, 50)),
+            CreateSolidBrush(rgb(255, 0, 0)),
+        ];
+        let face = wide("Segoe UI");
+        let font_height = |points: i32| -((points * DPI + 36) / 72);
+        FONTS = [
+            CreateFontW(
+                font_height(10),
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                face.as_ptr(),
+            ),
+            CreateFontW(
+                font_height(18),
+                0,
+                0,
+                0,
+                FW_SEMIBOLD as i32,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                face.as_ptr(),
+            ),
+            CreateFontW(
+                font_height(11),
+                0,
+                0,
+                0,
+                FW_SEMIBOLD as i32,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                face.as_ptr(),
+            ),
+            CreateFontW(
+                font_height(9),
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                face.as_ptr(),
+            ),
+            CreateFontW(
+                font_height(12),
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                face.as_ptr(),
+            ),
+        ];
+        !BG_BRUSH.is_null()
+            && !SURFACE_BRUSH.is_null()
+            && !DIVIDER_BRUSH.is_null()
+            && !PRIMARY_BRUSH.is_null()
+            && !PRESSED_BRUSH.is_null()
+            && !LAMP_BRUSHES[0].is_null()
+            && !LAMP_BRUSHES[1].is_null()
+            && !LAMP_BRUSHES[2].is_null()
+            && !FONTS[0].is_null()
+            && !FONTS[1].is_null()
+            && !FONTS[2].is_null()
+            && !FONTS[3].is_null()
+            && !FONTS[4].is_null()
+    }
+}
+
+unsafe fn destroy_theme_resources() {
+    unsafe {
+        for brush in [
+            BG_BRUSH,
+            SURFACE_BRUSH,
+            DIVIDER_BRUSH,
+            PRIMARY_BRUSH,
+            PRESSED_BRUSH,
+        ] {
+            if !brush.is_null() {
+                DeleteObject(brush as _);
+            }
+        }
+        for brush in LAMP_BRUSHES {
+            if !brush.is_null() {
+                DeleteObject(brush as _);
+            }
+        }
+        for font in FONTS {
+            if !font.is_null() {
+                DeleteObject(font as _);
+            }
+        }
+    }
+}
+
+unsafe fn draw_primary_button(item: &DRAWITEMSTRUCT) {
+    unsafe {
+        let saved_dc = SaveDC(item.hDC);
+        let rect = item.rcItem;
+        let radius = (12 * DPI + 48) / 96;
+        let region =
+            CreateRoundRectRgn(rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+        let brush = if item.itemState & ODS_SELECTED != 0 {
+            PRESSED_BRUSH
+        } else {
+            PRIMARY_BRUSH
+        };
+        FillRgn(item.hDC, region, brush);
+        SelectObject(item.hDC, FONTS[2] as _);
+        SetBkMode(item.hDC, TRANSPARENT as i32);
+        SetTextColor(item.hDC, rgb(255, 255, 255));
+        let mut text = [0u16; 64];
+        let len = GetWindowTextW(item.hwndItem, text.as_mut_ptr(), text.len() as i32);
+        let mut text_rect = rect;
+        DrawTextW(
+            item.hDC,
+            text.as_ptr(),
+            len,
+            &mut text_rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
+        if item.itemState & ODS_FOCUS != 0 {
+            let mut focus = rect;
+            focus.left += 5;
+            focus.top += 5;
+            focus.right -= 5;
+            focus.bottom -= 5;
+            DrawFocusRect(item.hDC, &focus);
+        }
+        RestoreDC(item.hDC, saved_dc);
+        DeleteObject(region as _);
+    }
+}
+
+unsafe fn draw_status_dot(item: &DRAWITEMSTRUCT) {
+    let index = STATE.with(|s| match s.borrow().status {
+        Status::Stopped => 0,
+        Status::Monitoring => 1,
+        Status::Moving => 2,
+    });
+    unsafe {
+        let r = item.rcItem;
+        let region = CreateEllipticRgn(r.left, r.top, r.right, r.bottom);
+        FillRgn(item.hDC, region, LAMP_BRUSHES[index]);
+        DeleteObject(region as _);
+    }
 }
 unsafe fn start_movement() {
     cancel_worker(&WORKER_CANCEL);
@@ -715,8 +977,8 @@ fn main() {
         let mut rect = RECT {
             left: 0,
             top: 0,
-            right: sc(290),
-            bottom: sc(166),
+            right: sc(340),
+            bottom: sc(344),
         };
         AdjustWindowRectEx(&mut rect, style, 0, WS_EX_TOPMOST);
         let wc = WNDCLASSW {
@@ -725,7 +987,7 @@ fn main() {
             hInstance: INSTANCE as _,
             hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
             hIcon: LoadIconW(INSTANCE as _, 2 as _),
-            hbrBackground: GetStockObject(WHITE_BRUSH) as HBRUSH,
+            hbrBackground: std::ptr::null_mut(),
             lpszClassName: class.as_ptr(),
             ..Default::default()
         };

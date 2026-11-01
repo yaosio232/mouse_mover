@@ -1,10 +1,16 @@
-param([string]$Executable = 'artifacts/release/MouseMoverApp.exe')
+param(
+    [string]$Executable = 'artifacts/release/MouseMoverApp.exe',
+    [string]$Screenshot
+)
 $ErrorActionPreference = 'Stop'
 Add-Type @'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class NativeUiCheck {
+    [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll", EntryPoint="SendMessageW", CharSet=CharSet.Unicode)] public static extern IntPtr ReadText(IntPtr hwnd, uint msg, IntPtr size, StringBuilder text);
@@ -44,6 +50,21 @@ try {
     Require ((Text $button) -eq 'Start (F10)') 'Startup button differs'
     Require ((Text $hours) -eq '3' -and (Text $minutes) -eq '0' -and (Text $seconds) -eq '0') 'Default duration differs'
     Require ((Text $label) -eq 'Stop countdown: Off') 'Countdown not initially off'
+    if ($Screenshot) {
+        Add-Type -AssemblyName System.Drawing
+        $rect = [NativeUiCheck+Rect]::new()
+        Require ([NativeUiCheck]::GetWindowRect($window,[ref]$rect)) 'Could not read render bounds'
+        $bitmap = [Drawing.Bitmap]::new($rect.Right-$rect.Left,$rect.Bottom-$rect.Top)
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        $dc = $graphics.GetHdc()
+        try { Require ([NativeUiCheck]::PrintWindow($window,$dc,2)) 'Native window render failed' }
+        finally { $graphics.ReleaseHdc($dc); $graphics.Dispose() }
+        try {
+            $imagePath = [IO.Path]::GetFullPath($Screenshot)
+            New-Item -ItemType Directory -Force (Split-Path $imagePath -Parent) | Out-Null
+            $bitmap.Save($imagePath,[Drawing.Imaging.ImageFormat]::Png)
+        } finally { $bitmap.Dispose() }
+    }
     $minuteSpinner = [NativeUiCheck]::GetDlgItem($window,106)
     $secondSpinner = [NativeUiCheck]::GetDlgItem($window,107)
     $hourSpinner = [NativeUiCheck]::GetDlgItem($window,112)

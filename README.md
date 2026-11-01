@@ -2,8 +2,10 @@
 
 A pure Rust mouse movement tool using native Win32 controls. Runs directly without .NET or a bundled GUI runtime.
 
-The Rust build is about 342 KB; local warm startup was about 10× faster than the
+The Rust build is about 345 KB; local warm startup was about 10× faster than the
 previous C# standalone release. See [measurements and verification](docs/rust-migration-results.md).
+
+![Light native Windows interface](docs/ui-rust-light.png)
 
 ## Download and usage
 

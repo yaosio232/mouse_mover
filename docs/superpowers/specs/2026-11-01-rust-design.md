@@ -12,6 +12,13 @@ three-hour default shown as 3/0/0. Hours allow 0..999; minutes and seconds allow
 while preserving the compact width. Once verified, commit and push to origin/main
 as explicitly requested by the user.
 
+UI follow-up: the user selected a clean light appearance with a blue primary
+button. Replace the stock bitmap-looking font with DPI-scaled Segoe UI, give
+status, action and countdown clear spacing, align the three duration inputs,
+and paint labels on a consistent light background. Keep real native controls,
+keyboard focus feedback and existing accessible labels. Use GDI for the blue
+button and status indicator; add no GUI framework or runtime dependency.
+
 The Win32 message loop owns UI and state; timed movement must remain cancellable
 by physical input and countdown expiry before any subsequent cursor step/click.
 Injected mouse/keyboard events must not reset inactivity. Preserve the corrected

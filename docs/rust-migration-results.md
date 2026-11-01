@@ -8,10 +8,10 @@ does not need .NET, a WebView, or third-party runtime DLLs.
 
 | Measurement | C# v1.0.1 | Rust |
 | --- | ---: | ---: |
-| EXE bytes | 71,855,237 | 342,016 |
-| Warm startup median | 223.14 ms | 22.14 ms |
+| EXE bytes | 71,855,237 | 345,088 |
+| Warm startup median | 224.17 ms | 23.18 ms |
 
-EXE size fell **99.52%**. Warm startup was **10.1× faster** on this machine.
+EXE size fell **99.52%**. Warm startup was **9.7× faster** on this machine.
 These are warm process launches, not cold boot or first-download measurements:
 one warmup per executable, then ten launches each in alternating order, measuring
 process start until its main window is visible. Measurements include PowerShell
@@ -19,7 +19,12 @@ process start until its main window is visible. Measurements include PowerShell
 
 Raw samples and hashes: `artifacts/startup-benchmark.json`.
 The final Rust EXE is `artifacts/rust-release/MouseMoverApp.exe`.
-SHA-256: `c7be036389b68e3055b51be4844868e3797dbf220f8daf13660ef2e86993da60`.
+SHA-256: `661ef82e5c03cd921a017d7a8ec1780ac35cab6766dee83f1c92a92b29456ed5`.
+
+The light UI uses DPI-scaled Segoe UI, a blue native owner-drawn action button,
+a status dot with text, and aligned hours/minutes/seconds fields. Preview:
+
+![Light native Windows interface](ui-rust-light.png)
 
 ## Verification
 
@@ -35,6 +40,8 @@ SHA-256: `c7be036389b68e3055b51be4844868e3797dbf220f8daf13660ef2e86993da60`.
   passed. Checks topmost fixed window, 3/0/0 defaults, all three spinner buddies/ranges,
   Start/Stop, hours affecting countdown, countdown before Start, restart, zero
   duration and global F10.
+- Native render captured and visually inspected for readable text, unclipped
+  bounds, consistent light backgrounds and aligned duration fields.
 - PE import inspection: x64 Windows GUI subsystem; only Windows system DLLs
   (`kernel32`, `msvcrt`, `ntdll`, synchronization API set, `comctl32`, `gdi32`, `user32`).
 
@@ -57,3 +64,5 @@ cargo clippy --locked --all-targets -- -D warnings
 
 Publishing intentionally requires an empty output directory. The benchmark needs
 the prior release EXE and should run while no other instance owns global F10.
+Use `-Screenshot artifacts/ui-rust-light.png` with `check-ui.ps1` to save the
+application's own native window render for visual inspection.
