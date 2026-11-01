@@ -21,7 +21,7 @@ button and status indicator; add no GUI framework or runtime dependency.
 
 The compact client is 340×130 and contains three rows, following the user's
 reference: a 40px-high blue gradient Start/Stop button with a background icon;
-a round lamp, Status label and colored state badge, IDLE HH:MM:SS and In MM:SS;
+a round lamp and state value without the Status prefix, IDLE HH:MM:SS and In MM:SS;
 then the stop checkbox and h/m/s inputs. In begins at 03:00 and clamps at zero.
 There is no separate title, subtitle or fourth countdown row.
 
@@ -33,11 +33,16 @@ Read the checked state from BM_GETCHECK when painting; do not infer it from cust
 draw notification flags.
 
 A keyboard-accessible checkerboard button switches background transparency using
-WS_EX_LAYERED and a native color key. Buttons, badges, inputs and text backplates
-remain opaque and clickable. Changing the background must not change monitoring,
+WS_EX_LAYERED and a dedicated dark native color key. Transparent mode removes
+text, badge and checkbox-caption backplates; outlined floating text remains
+readable over light and dark surfaces. Buttons, checkbox glyph and inputs remain
+opaque and clickable. Changing the background must not change monitoring,
 countdown or numeric values. The normal background is restored on the next click.
 After verification, replace the existing v1.0.2 tag and release assets as explicitly
 requested, retaining the same public download URLs.
+
+Verify actual desktop composition over controlled black/white fixture windows,
+not just layered-style flags. No user desktop content belongs in repository images.
 
 Mouse input must update inactivity/cancellation immediately without forcing a
 paint for every event. Refresh text only when it changes, redraw indicators only

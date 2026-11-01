@@ -8,24 +8,25 @@ does not need .NET, a WebView, or third-party runtime DLLs.
 
 | Measurement | C# v1.0.1 | Rust |
 | --- | ---: | ---: |
-| EXE bytes | 71,855,237 | 349,184 |
-| Warm startup median | 222.54 ms | 23.04 ms |
+| EXE bytes | 71,855,237 | 350,208 |
+| Warm startup median | 220.42 ms | 21.18 ms |
 
-EXE size fell **99.51%**. Warm startup was **9.7× faster** on this machine.
+EXE size fell **99.51%**. Warm startup was **10.4× faster** on this machine.
 These are warm process launches, not cold boot or first-download measurements:
 one warmup per executable, then ten launches each in alternating order, measuring
 process start until its main window is visible. Measurements include PowerShell
 `Start-Process` overhead and can vary with Windows, hardware and antivirus state.
 
 Raw samples and hashes: `artifacts/startup-benchmark.json`.
-The final Rust EXE is `artifacts/three-row-release/MouseMoverApp.exe`.
-SHA-256: `4656990692f2193f41f69cac9b6350bb9516d921d412d98a6ce574892a14881a`.
+The final Rust EXE is `artifacts/cutout-release/MouseMoverApp.exe`.
+SHA-256: `0cf574d513cca83d2bbf611b72528f02dc46a404e0d42de3dd2e2651291e6dd0`.
 
 The 340×130 client has three rows: a gradient blue button and checkerboard
-background toggle; a lamp, colored Status badge, IDLE HH:MM:SS and In 03:00;
+background toggle; a lamp, state badge, IDLE HH:MM:SS and In 03:00;
 then a 20px native checkbox with 12pt normal-weight caption and h/m/s fields.
-Countdown feedback is integrated into the checkbox caption. The checkerboard
-icon switches background-only transparency while keeping controls readable.
+The redundant Status prefix is removed. Countdown feedback is integrated into
+the checkbox caption. Transparent mode removes all text and badge backplates,
+using outlined floating text; the blue button, checkbox and input boxes stay opaque.
 Status and In text are vertically aligned. Preview:
 
 ![Light native Windows interface](ui-rust-light.png)
@@ -48,14 +49,19 @@ Status and In text are vertically aligned. Preview:
   duplicate text is not rewritten. Restoring the old unconditional refresh caused
   the regression to fail before restoring the fix.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `scripts/publish.ps1 -OutputDirectory artifacts/three-row-release`: passed; standalone
+- `scripts/publish.ps1 -OutputDirectory artifacts/cutout-release`: passed; standalone
   EXE, two UTF-8 instruction TXT files, and SHA-256 output produced.
-- `scripts/check-ui.ps1 -Executable artifacts/three-row-release/MouseMoverApp.exe`:
+- `scripts/check-ui.ps1 -Executable artifacts/cutout-release/MouseMoverApp.exe`:
   passed. Checks topmost fixed window, 3/0/0 defaults, all three spinner buddies/ranges,
   Start/Stop, hours affecting countdown, countdown before Start, restart, zero
   duration and global F10. Also checks three rows, In 03:00 and IDLE HH:MM:SS,
   icon placement and accessible action name, native color-key transparency and
   restoration, and that changing the background preserves countdown and fields.
+- `scripts/check-cutout.ps1 -Executable artifacts/cutout-release/MouseMoverApp.exe`:
+  passed on an unlocked Windows desktop. Checks actual DWM-composited pixels over
+  disposable black and white fixture windows: former text/badge/caption/icon
+  background positions match the backdrop, while input boxes remain opaque.
+  These captures contain only the app and controlled fixture, not user desktop content.
 - Native render captured and visually inspected for readable text, unclipped
   bounds, consistent light backgrounds and aligned duration fields, including
   `999h 59m 59s` at the enlarged font size.
@@ -84,3 +90,7 @@ Publishing intentionally requires an empty output directory. The benchmark needs
 the prior release EXE and should run while no other instance owns global F10.
 Use `-Screenshot artifacts/ui-rust-light.png` with `check-ui.ps1` to save the
 application's own native window render for visual inspection.
+
+Transparent-mode composition checks: [black backdrop](ui-transparent-dark.png),
+[white backdrop](ui-transparent-light.png). Reproduce locally with
+`./scripts/check-cutout.ps1 -Executable artifacts/new-release/MouseMoverApp.exe`.
