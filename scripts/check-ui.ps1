@@ -105,8 +105,7 @@ try {
     Click $backgroundToggle
     Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x80000) -ne 0) 'Transparent background mode was not enabled'
     [uint32]$key = 0; [byte]$alpha = 0; [uint32]$flags = 0
-    Require ([NativeUiCheck]::GetLayeredWindowAttributes($window,[ref]$key,[ref]$alpha,[ref]$flags)) 'No native transparency attributes'
-    Require ($key -eq (1 -bor (1 -shl 8) -bor (1 -shl 16)) -and ($flags -band 1) -ne 0 -and ($flags -band 2) -eq 0) 'Only the cutout background color should be transparent'
+    Require (![NativeUiCheck]::GetLayeredWindowAttributes($window,[ref]$key,[ref]$alpha,[ref]$flags)) 'Transparent mode must use a per-pixel surface, not color-key click-through holes'
     Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x20) -eq 0) 'Controls must remain clickable in transparent mode'
     Require ((Text $backgroundToggle) -eq 'Restore opaque background') 'Transparent icon action name did not update'
     Click $backgroundToggle

@@ -14,18 +14,20 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Foundation::{GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
     Graphics::Gdi::{
-        CreateEllipticRgn, CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush,
-        DeleteObject, DrawFocusRect, DrawTextW, FillRect, FillRgn, FrameRgn, GradientFill,
-        InvalidateRect, Polyline, RedrawWindow, RestoreDC, SaveDC, SelectClipRgn, SelectObject,
-        SetBkColor, SetBkMode, SetTextColor, UpdateWindow, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
-        FW_NORMAL, FW_SEMIBOLD, GRADIENT_FILL_RECT_V, GRADIENT_RECT, HBRUSH, HDC, HFONT, PS_SOLID,
+        CreateCompatibleDC, CreateDIBSection, CreateEllipticRgn, CreateFontW, CreatePen,
+        CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawFocusRect, DrawTextW,
+        FillRect, FillRgn, FrameRgn, GdiFlush, GradientFill, InvalidateRect, Polyline,
+        RedrawWindow, RestoreDC, SaveDC, SelectClipRgn, SelectObject, SetBkColor, SetBkMode,
+        SetTextColor, SetViewportOrgEx, UpdateWindow, AC_SRC_ALPHA, BITMAPINFO, BITMAPINFOHEADER,
+        BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_NORMAL,
+        FW_SEMIBOLD, GRADIENT_FILL_RECT_V, GRADIENT_RECT, HBRUSH, HDC, HFONT, PS_SOLID,
         RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, TRANSPARENT, TRIVERTEX,
     },
     System::LibraryLoader::GetModuleHandleW,
     System::SystemInformation::GetTickCount,
-    System::SystemServices::SS_OWNERDRAW,
+    System::SystemServices::{MK_LBUTTON, SS_OWNERDRAW},
     UI::{
         Controls::{
             InitCommonControls, BST_CHECKED, CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT,
@@ -35,9 +37,9 @@ use windows_sys::Win32::{
         },
         HiDpi::GetDpiForSystem,
         Input::KeyboardAndMouse::{
-            GetLastInputInfo, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_0,
-            INPUT_MOUSE, LASTINPUTINFO, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
-            VK_F10,
+            GetFocus, GetLastInputInfo, RegisterHotKey, SendInput, UnregisterHotKey, INPUT,
+            INPUT_0, INPUT_MOUSE, LASTINPUTINFO, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+            MOUSEINPUT, VK_F10,
         },
         WindowsAndMessaging::*,
     },
@@ -55,6 +57,8 @@ static mut INSTANCE: isize = 0;
 static mut DPI: i32 = 96;
 static mut TIMER_RUNNING: bool = false;
 static mut BACKGROUND_TRANSPARENT: bool = false;
+static mut LAYERED_REDRAW_PENDING: bool = false;
+static mut LAYERED_RENDERING: bool = false;
 
 #[derive(Clone, Copy)]
 struct Ui {
@@ -86,6 +90,81 @@ static TEST_UI_INVALIDATIONS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 thread_local! { static STATE: RefCell<ActivityState> = RefCell::new(ActivityState::new(Instant::now())); }
 
+type SubclassProc =
+    Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM, usize, usize) -> LRESULT>;
+#[link(name = "comctl32")]
+extern "system" {
+    fn DefSubclassProc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT;
+    fn SetWindowSubclass(hwnd: HWND, callback: SubclassProc, id: usize, data: usize) -> i32;
+}
+
+unsafe extern "system" fn checkbox_hit_proc(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    // A native checkbox only activates over its own glyph/caption width. Keep
+    // its normal mouse and accessibility behavior across the full control.
+    let pressed_move = msg == WM_MOUSEMOVE && wp & MK_LBUTTON as usize != 0;
+    let lp = if matches!(msg, WM_LBUTTONDOWN | WM_LBUTTONUP | WM_LBUTTONDBLCLK) || pressed_move {
+        let x = lp as i16 as i32;
+        let y = (lp >> 16) as i16 as i32;
+        let mut rect = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rect) };
+        if x >= 0 && y >= 0 && x < rect.right && y < rect.bottom {
+            let center_x = (5 * unsafe { DPI } + 48) / 96;
+            let center_y = rect.bottom / 2;
+            ((center_y as u16 as isize) << 16) | center_x as u16 as isize
+        } else {
+            lp
+        }
+    } else {
+        lp
+    };
+    let native_msg = if msg == WM_LBUTTONDBLCLK {
+        WM_LBUTTONDOWN
+    } else {
+        msg
+    };
+    unsafe { DefSubclassProc(hwnd, native_msg, wp, lp) }
+}
+
+unsafe fn schedule_layered_redraw(hwnd: HWND) {
+    if unsafe { BACKGROUND_TRANSPARENT && !LAYERED_REDRAW_PENDING && !LAYERED_RENDERING } {
+        unsafe { LAYERED_REDRAW_PENDING = true };
+        unsafe { PostMessageW(hwnd, WM_APP + 4, 0, 0) };
+    }
+}
+
+unsafe extern "system" fn control_repaint_proc(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    // Owner-drawn buttons report a double-click notification instead of a
+    // second click. Treat the second press normally so every release clicks.
+    let native_msg =
+        if msg == WM_LBUTTONDBLCLK && matches!(unsafe { GetDlgCtrlID(hwnd) }, 100 | 117) {
+            WM_LBUTTONDOWN
+        } else {
+            msg
+        };
+    let result = unsafe { DefSubclassProc(hwnd, native_msg, wp, lp) };
+    if matches!(
+        msg,
+        WM_PAINT | WM_SETTEXT | WM_SETFOCUS | WM_KILLFOCUS | WM_LBUTTONUP | WM_KEYUP
+    ) {
+        unsafe { schedule_layered_redraw(GetParent(hwnd)) };
+    }
+    result
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
@@ -112,15 +191,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             let id = (wp & 0xffff) as i32;
             let notification = ((wp >> 16) & 0xffff) as u16;
             unsafe {
-                if id == 100 {
+                if id == 100 && notification == BN_CLICKED as u16 {
                     toggle();
-                } else if id == 117 {
+                } else if id == 117 && notification == BN_CLICKED as u16 {
                     toggle_background();
                 } else if id == 103
                     || ((id == 104 || id == 105 || id == 111) && notification == EN_CHANGE as u16)
                 {
                     configure_countdown();
                 }
+                schedule_layered_redraw(hwnd);
             }
             0
         }
@@ -130,6 +210,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let draw = unsafe { &*(lp as *const NMCUSTOMDRAW) };
                 if draw.dwDrawStage == CDDS_PREPAINT {
                     unsafe { draw_stop_checkbox(draw) };
+                    unsafe { schedule_layered_redraw(hwnd) };
                     return CDRF_SKIPDEFAULT as LRESULT;
                 }
             }
@@ -150,6 +231,32 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         WM_TIMER if wp == WM_TIMER_ID => {
             unsafe {
                 tick();
+                schedule_layered_redraw(hwnd);
+            }
+            0
+        }
+        val if val == WM_APP + 4 => {
+            unsafe {
+                LAYERED_REDRAW_PENDING = false;
+                if BACKGROUND_TRANSPARENT {
+                    if let Err(error) = render_layered(hwnd) {
+                        BACKGROUND_TRANSPARENT = false;
+                        let _ = apply_background_mode(hwnd, false);
+                        if let Some(ui) = UI {
+                            set_text(ui.background_toggle, "Make background transparent");
+                        }
+                        RedrawWindow(
+                            hwnd,
+                            std::ptr::null(),
+                            std::ptr::null_mut(),
+                            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+                        );
+                        message(&format!(
+                            "Unable to render transparent window:\r\n{}",
+                            std::io::Error::from_raw_os_error(error as i32)
+                        ));
+                    }
+                }
             }
             0
         }
@@ -165,6 +272,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             if lp != 0 {
                 let item = unsafe { &*(lp as *const DRAWITEMSTRUCT) };
                 unsafe {
+                    schedule_layered_redraw(hwnd);
                     if item.CtlID == 100 {
                         draw_primary_button(item);
                         return 1;
@@ -244,6 +352,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             unsafe {
                 destroy_theme_resources();
                 UI = None;
+                LAYERED_REDRAW_PENDING = false;
+                LAYERED_RENDERING = false;
             }
             result
         }
@@ -418,6 +528,24 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
         SendMessageW(button, WM_SETFONT, FONTS[1] as usize, 1);
         SendMessageW(background_toggle, WM_SETFONT, FONTS[0] as usize, 1);
         SendMessageW(check, WM_SETFONT, FONTS[5] as usize, 1);
+        if SetWindowSubclass(check, Some(checkbox_hit_proc), 1, 0) == 0 {
+            return false;
+        }
+        for control in [
+            button,
+            background_toggle,
+            check,
+            hours,
+            minutes,
+            sec_edit,
+            uphour,
+            upmin,
+            upsec,
+        ] {
+            if SetWindowSubclass(control, Some(control_repaint_proc), 2, 0) == 0 {
+                return false;
+            }
+        }
         SendMessageW(status_badge, WM_SETFONT, FONTS[3] as usize, 1);
         SendMessageW(idle_badge, WM_SETFONT, FONTS[4] as usize, 1);
         SendMessageW(in_time, WM_SETFONT, FONTS[4] as usize, 1);
@@ -533,12 +661,24 @@ unsafe fn toggle_background() {
                 "Make background transparent"
             },
         );
-        RedrawWindow(
-            ui.hwnd,
-            std::ptr::null(),
-            std::ptr::null_mut(),
-            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
-        );
+        if enable {
+            if let Err(error) = render_layered(ui.hwnd) {
+                BACKGROUND_TRANSPARENT = false;
+                let _ = apply_background_mode(ui.hwnd, false);
+                set_text(ui.background_toggle, "Make background transparent");
+                message(&format!(
+                    "Unable to render transparent window:\r\n{}",
+                    std::io::Error::from_raw_os_error(error as i32)
+                ));
+            }
+        } else {
+            RedrawWindow(
+                ui.hwnd,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+            );
+        }
     }
 }
 
@@ -566,13 +706,6 @@ unsafe fn apply_background_mode(hwnd: HWND, transparent: bool) -> Result<(), u32
             return Err(error);
         }
     }
-    if transparent
-        && unsafe { SetLayeredWindowAttributes(hwnd, TRANSPARENCY_KEY, 255, LWA_COLORKEY) } == 0
-    {
-        let error = unsafe { GetLastError() };
-        unsafe { restore_window_style(hwnd, previous) };
-        return Err(if error == 0 { 31 } else { error });
-    }
     if unsafe {
         SetWindowPos(
             hwnd,
@@ -590,6 +723,236 @@ unsafe fn apply_background_mode(hwnd: HWND, transparent: bool) -> Result<(), u32
         return Err(if error == 0 { 31 } else { error });
     }
     Ok(())
+}
+
+unsafe fn render_layered(hwnd: HWND) -> Result<(), u32> {
+    let mut window = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut window) } == 0 {
+        return Err(unsafe { GetLastError() });
+    }
+    let width = window.right - window.left;
+    let height = window.bottom - window.top;
+    if width <= 0 || height <= 0 {
+        return Err(87);
+    }
+    let bitmap_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let bitmap = unsafe {
+        CreateDIBSection(
+            std::ptr::null_mut(),
+            &bitmap_info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if bitmap.is_null() {
+        return Err(unsafe { GetLastError() });
+    }
+    let dc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
+    if dc.is_null() {
+        let error = unsafe { GetLastError() };
+        unsafe { DeleteObject(bitmap as _) };
+        return Err(error);
+    }
+    let old_bitmap = unsafe { SelectObject(dc, bitmap as _) };
+    let pixels = unsafe {
+        std::slice::from_raw_parts_mut(bits as *mut u8, width as usize * height as usize * 4)
+    };
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel.copy_from_slice(&[1, 1, 1, 0]);
+    }
+    unsafe { LAYERED_RENDERING = true };
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_PRINT,
+            dc as usize,
+            (PRF_NONCLIENT | PRF_CLIENT | PRF_ERASEBKGND) as isize,
+        );
+        paint_layered_children(hwnd, dc, &window);
+    }
+    unsafe { LAYERED_RENDERING = false };
+    unsafe { GdiFlush() };
+
+    // Preserve the cutout visually. Alpha 1 is below a display shade step,
+    // while Windows treats it as a hit surface for the native child controls.
+    let mut hit_rects = [RECT::default(); 9];
+    for (index, id) in [100, 103, 117, 111, 104, 105, 112, 106, 107]
+        .into_iter()
+        .enumerate()
+    {
+        let control = unsafe { GetDlgItem(hwnd, id) };
+        if !control.is_null() {
+            unsafe { GetWindowRect(control, &mut hit_rects[index]) };
+            hit_rects[index].left -= window.left;
+            hit_rects[index].right -= window.left;
+            hit_rects[index].top -= window.top;
+            hit_rects[index].bottom -= window.top;
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let offset = ((y * width + x) * 4) as usize;
+            let pixel = &mut pixels[offset..offset + 4];
+            if pixel[..3] == [1, 1, 1] {
+                if hit_rects.iter().any(|rect| {
+                    x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
+                }) {
+                    pixel[3] = 1;
+                } else {
+                    pixel.fill(0);
+                }
+            } else {
+                pixel[3] = 255;
+            }
+        }
+    }
+    let destination = POINT {
+        x: window.left,
+        y: window.top,
+    };
+    let size = SIZE {
+        cx: width,
+        cy: height,
+    };
+    let origin = POINT { x: 0, y: 0 };
+    let blend = BLENDFUNCTION {
+        BlendOp: 0,
+        BlendFlags: 0,
+        SourceConstantAlpha: 255,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    let result = unsafe {
+        UpdateLayeredWindow(
+            hwnd,
+            std::ptr::null_mut(),
+            &destination,
+            &size,
+            dc,
+            &origin,
+            0,
+            &blend,
+            ULW_ALPHA,
+        )
+    };
+    let error = if result == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
+    unsafe {
+        SelectObject(dc, old_bitmap);
+        DeleteDC(dc);
+        DeleteObject(bitmap as _);
+    }
+    if result == 0 {
+        Err(error)
+    } else {
+        Ok(())
+    }
+}
+
+unsafe fn paint_layered_children(hwnd: HWND, dc: HDC, window: &RECT) {
+    let mut pointer = POINT::default();
+    unsafe { GetCursorPos(&mut pointer) };
+    for id in [
+        100, 117, 101, 102, 114, 116, 103, 113, 108, 109, 111, 112, 104, 106, 105, 107,
+    ] {
+        let child = unsafe { GetDlgItem(hwnd, id) };
+        if child.is_null() {
+            continue;
+        }
+        let mut bounds = RECT::default();
+        if unsafe { GetWindowRect(child, &mut bounds) } == 0 {
+            continue;
+        }
+        let width = bounds.right - bounds.left;
+        let height = bounds.bottom - bounds.top;
+        if width <= 0 || height <= 0 {
+            continue;
+        }
+        let saved = unsafe { SaveDC(dc) };
+        unsafe {
+            SetViewportOrgEx(
+                dc,
+                bounds.left - window.left,
+                bounds.top - window.top,
+                std::ptr::null_mut(),
+            );
+            SendMessageW(
+                child,
+                WM_PRINT,
+                dc as usize,
+                (PRF_NONCLIENT | PRF_CLIENT | PRF_ERASEBKGND) as isize,
+            );
+            RestoreDC(dc, saved);
+        }
+        let rect = RECT {
+            left: bounds.left - window.left,
+            top: bounds.top - window.top,
+            right: bounds.right - window.left,
+            bottom: bounds.bottom - window.top,
+        };
+        if id == 103 {
+            let mut draw: NMCUSTOMDRAW = unsafe { std::mem::zeroed() };
+            draw.hdr.hwndFrom = child;
+            draw.hdc = dc;
+            draw.rc = rect;
+            let state = unsafe { SendMessageW(child, BM_GETSTATE, 0, 0) } as u32;
+            if state & BST_PUSHED != 0 {
+                draw.uItemState |= CDIS_SELECTED;
+            }
+            if unsafe { GetFocus() } == child {
+                draw.uItemState |= CDIS_FOCUS;
+            }
+            if pointer.x >= bounds.left
+                && pointer.x < bounds.right
+                && pointer.y >= bounds.top
+                && pointer.y < bounds.bottom
+            {
+                draw.uItemState |= CDIS_HOT;
+            }
+            unsafe { draw_stop_checkbox(&draw) };
+        } else if matches!(id, 100 | 117 | 101 | 102 | 114 | 116 | 113 | 108 | 109) {
+            let mut draw = DRAWITEMSTRUCT {
+                CtlID: id as u32,
+                hwndItem: child,
+                hDC: dc,
+                rcItem: rect,
+                ..Default::default()
+            };
+            let state = unsafe { SendMessageW(child, BM_GETSTATE, 0, 0) } as u32;
+            if state & BST_PUSHED != 0 {
+                draw.itemState |= ODS_SELECTED;
+            }
+            if unsafe { GetFocus() } == child {
+                draw.itemState |= ODS_FOCUS;
+            }
+            unsafe {
+                match id {
+                    100 => draw_primary_button(&draw),
+                    117 => draw_transparency_toggle(&draw),
+                    101 => draw_status_dot(&draw),
+                    102 => draw_status_badge(&draw),
+                    114 => draw_idle_badge(&draw),
+                    _ => draw_floating_static(&draw),
+                }
+            }
+        }
+    }
 }
 
 unsafe fn restore_window_style(hwnd: HWND, style: isize) {
@@ -1899,7 +2262,7 @@ mod tests {
     }
 
     #[test]
-    fn background_transparency_uses_color_key_and_restores_window_style() {
+    fn background_transparency_uses_per_pixel_alpha_and_restores_window_style() {
         unsafe {
             let class = wide("STATIC");
             let host = CreateWindowExW(
@@ -1923,15 +2286,14 @@ mod tests {
                 GetWindowLongPtrW(host, GWL_EXSTYLE) & WS_EX_LAYERED as isize,
                 0
             );
+            assert!(render_layered(host).is_ok());
             let mut key = 0;
             let mut alpha = 0;
             let mut flags = 0;
-            assert_ne!(
+            assert_eq!(
                 GetLayeredWindowAttributes(host, &mut key, &mut alpha, &mut flags),
                 0
             );
-            assert_eq!(key, TRANSPARENCY_KEY);
-            assert_eq!(flags, LWA_COLORKEY);
             apply_background_mode(host, false).unwrap();
             assert_eq!(GetWindowLongPtrW(host, GWL_EXSTYLE), original);
             DestroyWindow(host);

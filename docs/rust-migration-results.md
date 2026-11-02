@@ -1,4 +1,4 @@
-# Rust migration verification — 2026-11-02
+# Rust migration verification — 2026-11-03
 
 The application is now Rust with native Win32 controls, hooks and input APIs.
 The C# project, implementation and test runner have been removed. The release
@@ -8,18 +8,18 @@ does not need .NET, a WebView, or third-party runtime DLLs.
 
 | Measurement | C# v1.0.1 | Rust |
 | --- | ---: | ---: |
-| EXE bytes | 71,855,237 | 350,208 |
-| Warm startup median | 220.42 ms | 21.18 ms |
+| EXE bytes | 71,855,237 | 354,304 |
+| Warm startup median | 226.58 ms | 22.60 ms |
 
-EXE size fell **99.51%**. Warm startup was **10.4× faster** on this machine.
+EXE size fell **99.51%**. Warm startup was **10.0× faster** on this machine.
 These are warm process launches, not cold boot or first-download measurements:
 one warmup per executable, then ten launches each in alternating order, measuring
 process start until its main window is visible. Measurements include PowerShell
 `Start-Process` overhead and can vary with Windows, hardware and antivirus state.
 
 Raw samples and hashes: `artifacts/startup-benchmark.json`.
-The final Rust EXE is `artifacts/cutout-release/MouseMoverApp.exe`.
-SHA-256: `0cf574d513cca83d2bbf611b72528f02dc46a404e0d42de3dd2e2651291e6dd0`.
+The final Rust EXE is `artifacts/hit-target-final/MouseMoverApp.exe`.
+SHA-256: `998fd3f6f4b61afe77325e432fe6e82a411d3d32660d03540c8bf7467b8fa26d`.
 
 The 340×130 client has three rows: a gradient blue button and checkerboard
 background toggle; a lamp, state badge, IDLE HH:MM:SS and In 03:00;
@@ -43,25 +43,35 @@ Status and In text are vertically aligned. Preview:
   seconds and all inline countdown captions. Native memory-DC pixels confirm the
   checkbox uses BM_GETCHECK instead of misleading draw flags; restoring the old
   flag read made the regression fail. Native layered-window properties confirm
-  color-key mode and restoration of the original style.
+  per-pixel alpha mode and restoration of the original style.
 - Native regression: 100 monitoring input events advance the input timestamp
   without text writes or control invalidations. A Win32 subclass also verifies
   duplicate text is not rewritten. Restoring the old unconditional refresh caused
   the regression to fail before restoring the fix.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `scripts/publish.ps1 -OutputDirectory artifacts/cutout-release`: passed; standalone
+- `scripts/publish.ps1 -OutputDirectory artifacts/hit-target-final`: passed; standalone
   EXE, two UTF-8 instruction TXT files, and SHA-256 output produced.
-- `scripts/check-ui.ps1 -Executable artifacts/cutout-release/MouseMoverApp.exe`:
+- `scripts/check-ui.ps1 -Executable artifacts/hit-target-final/MouseMoverApp.exe`:
   passed. Checks topmost fixed window, 3/0/0 defaults, all three spinner buddies/ranges,
   Start/Stop, hours affecting countdown, countdown before Start, restart, zero
   duration and global F10. Also checks three rows, In 03:00 and IDLE HH:MM:SS,
-  icon placement and accessible action name, native color-key transparency and
+  icon placement and accessible action name, native per-pixel transparency and
   restoration, and that changing the background preserves countdown and fields.
-- `scripts/check-cutout.ps1 -Executable artifacts/cutout-release/MouseMoverApp.exe`:
+- `scripts/check-cutout.ps1 -Executable artifacts/hit-target-final/MouseMoverApp.exe`:
   passed on an unlocked Windows desktop. Checks actual DWM-composited pixels over
   disposable black and white fixture windows: former text/badge/caption/icon
   background positions match the backdrop, while input boxes remain opaque.
   These captures contain only the app and controlled fixture, not user desktop content.
+- `scripts/check-hit-targets.ps1`: checks every pixel in button, checkbox, icon,
+  edit and spinner targets (excluding the native spinner/edit overlap), then
+  exercises real mouse clicks in both background modes. Includes the main
+  button's corners, blank checkbox-caption areas, rapid repeated clicks,
+  keyboard Space, spinner increments/decrements, and background click-through.
+  The prior release fails at the blank checkbox area and transparent button
+  corner; the initial notification-gated fix failed the rapid-click regression.
+- Transparent mode uses an almost invisible alpha of 1/255 inside interactive
+  padding so clicks reach the full control. Other empty cutouts retain alpha zero.
+  Its GDI-rendered title bar uses the basic Windows frame appearance.
 - Native render captured and visually inspected for readable text, unclipped
   bounds, consistent light backgrounds and aligned duration fields, including
   `999h 59m 59s` at the enlarged font size.

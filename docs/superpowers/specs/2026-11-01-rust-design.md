@@ -33,10 +33,15 @@ Read the checked state from BM_GETCHECK when painting; do not infer it from cust
 draw notification flags.
 
 A keyboard-accessible checkerboard button switches background transparency using
-WS_EX_LAYERED and a dedicated dark native color key. Transparent mode removes
+WS_EX_LAYERED and a per-pixel alpha surface. Transparent mode removes
 text, badge and checkbox-caption backplates; outlined floating text remains
 readable over light and dark surfaces. Buttons, checkbox glyph and inputs remain
-opaque and clickable. Changing the background must not change monitoring,
+opaque and clickable. Almost invisible nonzero alpha inside interactive control
+rectangles preserves their full pointer targets; empty background stays alpha zero.
+A checkbox subclass extends native activation to its full rectangle while keeping
+native checked-state, keyboard and accessibility behavior. Verify actual pointer
+targets and mouse actions, including the main button's rounded corners and the
+checkbox's blank caption area. Changing the background must not change monitoring,
 countdown or numeric values. The normal background is restored on the next click.
 After verification, replace the existing v1.0.2 tag and release assets as explicitly
 requested, retaining the same public download URLs.

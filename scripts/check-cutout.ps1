@@ -70,10 +70,14 @@ try {
                 $x = 20+$origin.X-$rect.Left+[int][Math]::Round($sample[0]*$scale)
                 $y = 20+$origin.Y-$rect.Top+[int][Math]::Round($sample[1]*$scale)
                 $pixel = $bitmap.GetPixel($x,$y)
-                Require ($pixel.R -eq $reference.R -and $pixel.G -eq $reference.G -and $pixel.B -eq $reference.B) "Opaque remnant at $($sample[0]),$($sample[1]) over $($theme[0]): $pixel vs $reference"
+                # Interactive padding has alpha 1/255 so it receives clicks.
+                # It may differ by one composited shade from the backdrop.
+                Require ([Math]::Abs($pixel.R-$reference.R) -le 2 -and [Math]::Abs($pixel.G-$reference.G) -le 2 -and [Math]::Abs($pixel.B-$reference.B) -le 2) "Opaque remnant at $($sample[0]),$($sample[1]) over $($theme[0]): $pixel vs $reference"
             }
             $inputPixel = $bitmap.GetPixel(20+$origin.X-$rect.Left+[int](158*$scale),20+$origin.Y-$rect.Top+[int](100*$scale))
             Require ($inputPixel.R -gt 160 -and [Math]::Abs($inputPixel.R-$inputPixel.G) -le 2 -and [Math]::Abs($inputPixel.G-$inputPixel.B) -le 2) "Input field must remain opaque: $inputPixel"
+            $buttonPixel = $bitmap.GetPixel(20+$origin.X-$rect.Left+[int](30*$scale),20+$origin.Y-$rect.Top+[int](25*$scale))
+            Require ($buttonPixel.B -gt $buttonPixel.R+30 -and $buttonPixel.G -gt $buttonPixel.R+20) "Primary button face must remain visible and blue: $buttonPixel"
             $bitmap.Save((Join-Path (Get-Location) "artifacts/cutout-on-$($theme[0]).png"),[Drawing.Imaging.ImageFormat]::Png)
             "PASS composited cutout over $($theme[0]) backdrop"
         } finally { $bitmap.Dispose() }
