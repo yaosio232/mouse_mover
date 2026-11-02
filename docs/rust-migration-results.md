@@ -18,7 +18,7 @@ process start until its main window is visible. Measurements include PowerShell
 `Start-Process` overhead and can vary with Windows, hardware and antivirus state.
 
 Raw samples and hashes: `artifacts/startup-benchmark.json`.
-The final Rust EXE is `artifacts/hit-target-final/MouseMoverApp.exe`.
+The measured Rust EXE is `artifacts/hit-target-final/MouseMoverApp.exe`.
 SHA-256: `998fd3f6f4b61afe77325e432fe6e82a411d3d32660d03540c8bf7467b8fa26d`.
 
 The 340×130 client has three rows: a gradient blue button and checkerboard
