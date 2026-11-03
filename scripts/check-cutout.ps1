@@ -34,19 +34,23 @@ public static class CutoutFixture {
     }
 }
 '@
-$preview = Start-Process -FilePath (Resolve-Path $Executable).Path -PassThru
+$previousLocalAppData = $env:LOCALAPPDATA
+$settingsTestDir = Join-Path ([IO.Path]::GetTempPath()) ("AzuSanpo-cutout-check-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $settingsTestDir | Out-Null
+$env:LOCALAPPDATA = $settingsTestDir
+try { $preview = Start-Process -FilePath (Resolve-Path $Executable).Path -PassThru }
+finally { $env:LOCALAPPDATA = $previousLocalAppData }
 $backdrop = [IntPtr]::Zero
 try {
     Require ($preview.WaitForInputIdle(10000)) 'Preview did not initialize'
     $preview.Refresh()
     $window = $preview.MainWindowHandle
-    $toggle = [NativeUiCheck]::GetDlgItem($window,117)
     $rect = [NativeUiCheck+Rect]::new()
     Require ([NativeUiCheck]::GetWindowRect($window,[ref]$rect)) 'No preview bounds'
     $origin = [CutoutFixture+Point]::new()
     Require ([CutoutFixture]::ClientToScreen($window,[ref]$origin)) 'No client origin'
     $scale = [NativeUiCheck]::GetDpiForWindow($window)/96.0
-    Click $toggle
+    $null = [NativeUiCheck]::SendMessage($window,0x111,603,0)
     foreach ($theme in @(@('black',4,0),@('white',6,255))) {
         $backdrop = [CutoutFixture]::CreateBackdrop(($theme[0] -eq 'white'),$rect.Left-20,$rect.Top-20,$rect.Right-$rect.Left+40,$rect.Bottom-$rect.Top+40)
         Require ($backdrop -ne 0) 'Could not create controlled backdrop'
@@ -66,7 +70,7 @@ try {
             # All captures are over our own solid backdrop; no desktop content is saved.
             # Compare with the same captured backdrop, allowing display color management.
             $reference = $bitmap.GetPixel(5,25)
-            foreach ($sample in @(@(4,60),@(50,59),@(200,59),@(290,59),@(100,97),@(198,99),@(306,14))) {
+            foreach ($sample in @(@(4,60),@(21,60),@(240,60),@(300,60),@(129,110),@(185,110),@(300,14))) {
                 $x = 20+$origin.X-$rect.Left+[int][Math]::Round($sample[0]*$scale)
                 $y = 20+$origin.Y-$rect.Top+[int][Math]::Round($sample[1]*$scale)
                 $pixel = $bitmap.GetPixel($x,$y)
@@ -74,7 +78,7 @@ try {
                 # It may differ by one composited shade from the backdrop.
                 Require ([Math]::Abs($pixel.R-$reference.R) -le 2 -and [Math]::Abs($pixel.G-$reference.G) -le 2 -and [Math]::Abs($pixel.B-$reference.B) -le 2) "Opaque remnant at $($sample[0]),$($sample[1]) over $($theme[0]): $pixel vs $reference"
             }
-            $inputPixel = $bitmap.GetPixel(20+$origin.X-$rect.Left+[int](158*$scale),20+$origin.Y-$rect.Top+[int](100*$scale))
+            $inputPixel = $bitmap.GetPixel(20+$origin.X-$rect.Left+[int](150*$scale),20+$origin.Y-$rect.Top+[int](94*$scale))
             Require ($inputPixel.R -gt 160 -and [Math]::Abs($inputPixel.R-$inputPixel.G) -le 2 -and [Math]::Abs($inputPixel.G-$inputPixel.B) -le 2) "Input field must remain opaque: $inputPixel"
             $buttonPixel = $bitmap.GetPixel(20+$origin.X-$rect.Left+[int](30*$scale),20+$origin.Y-$rect.Top+[int](25*$scale))
             Require ($buttonPixel.B -gt $buttonPixel.R+30 -and $buttonPixel.G -gt $buttonPixel.R+20) "Primary button face must remain visible and blue: $buttonPixel"
@@ -84,9 +88,13 @@ try {
         $null = [CutoutFixture]::DestroyWindow($backdrop)
         $backdrop = [IntPtr]::Zero
     }
-    Click $toggle
+    $null = [NativeUiCheck]::SendMessage($window,0x111,603,0)
 } finally {
     if ($backdrop -ne 0) { $null = [CutoutFixture]::DestroyWindow($backdrop) }
     if (!$preview.HasExited) { $null=$preview.CloseMainWindow(); Require ($preview.WaitForExit(5000)) 'Preview did not close normally' }
     $preview.Dispose()
+    $testRoot = [IO.Path]::GetFullPath($settingsTestDir)
+    if ($testRoot.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $testRoot -Recurse -Force
+    }
 }

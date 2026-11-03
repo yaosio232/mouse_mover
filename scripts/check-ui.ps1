@@ -35,7 +35,12 @@ function F10 {
     [NativeUiCheck]::keybd_event(0x79,0,2,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 150
 }
-$process = Start-Process -FilePath (Resolve-Path -LiteralPath $Executable).Path -PassThru
+$previousLocalAppData = $env:LOCALAPPDATA
+$settingsTestDir = Join-Path ([IO.Path]::GetTempPath()) ("AzuSanpo-ui-check-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $settingsTestDir | Out-Null
+$env:LOCALAPPDATA = $settingsTestDir
+try { $process = Start-Process -FilePath (Resolve-Path -LiteralPath $Executable).Path -PassThru }
+finally { $env:LOCALAPPDATA = $previousLocalAppData }
 $failed = $true
 try {
     Require ($process.WaitForInputIdle(10000)) 'App did not initialize'
@@ -50,14 +55,14 @@ try {
     $minutes = [NativeUiCheck]::GetDlgItem($window,104)
     $seconds = [NativeUiCheck]::GetDlgItem($window,105)
     $hours = [NativeUiCheck]::GetDlgItem($window,111)
-    $backgroundToggle = [NativeUiCheck]::GetDlgItem($window,117)
+    $settingsButton = [NativeUiCheck]::GetDlgItem($window,117)
     Require ([NativeUiCheck]::GetDlgItem($window,115) -eq 0) 'Status prefix must be removed'
     # Countdown feedback shares the native checkbox caption, keeping three rows.
     $label = $check
     $client = [NativeUiCheck+Rect]::new()
     Require ([NativeUiCheck]::GetClientRect($window,[ref]$client)) 'No client bounds'
     $scale = [NativeUiCheck]::GetDpiForWindow($window)/96.0
-    Require (($client.Right/$scale) -le 350 -and ($client.Bottom/$scale) -le 140) 'Three-row window must stay compact (max 350 x 140 logical pixels)'
+    Require (($client.Right/$scale) -le 310 -and ($client.Bottom/$scale) -le 116) 'Three-row window must stay compact (max 310 x 116 logical pixels)'
     $rows = @()
     $buttonBounds = $null
     foreach ($id in @(100,102,103)) {
@@ -67,18 +72,18 @@ try {
         $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$bounds,2)
         Require ($bounds.Left -ge 0 -and $bounds.Top -ge 0 -and $bounds.Right -le $client.Right -and $bounds.Bottom -le $client.Bottom) "Row $id is clipped"
         if ($id -eq 100) {
-            Require (($bounds.Bottom-$bounds.Top)/$scale -ge 39) 'Primary button must be at least 40 logical pixels high'
+            Require (($bounds.Bottom-$bounds.Top)/$scale -ge 35) 'Primary button must be at least 36 logical pixels high'
             $buttonBounds = $bounds
         }
         $rows += $bounds.Top
     }
     Require (@($rows | Sort-Object -Unique).Count -eq 3) 'Expected exactly three compact rows'
     $iconBounds = [NativeUiCheck+Rect]::new()
-    Require ($backgroundToggle -ne 0 -and [NativeUiCheck]::GetWindowRect($backgroundToggle,[ref]$iconBounds)) 'Missing background icon'
+    Require ($settingsButton -ne 0 -and [NativeUiCheck]::GetWindowRect($settingsButton,[ref]$iconBounds)) 'Missing settings gear'
     $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$iconBounds,2)
     Require ($iconBounds.Left -ge $buttonBounds.Right -and $iconBounds.Right -le $client.Right) 'Background icon must fit beside the primary button'
     Require ([Math]::Abs(($iconBounds.Top+$iconBounds.Bottom-$buttonBounds.Top-$buttonBounds.Bottom)/2) -le 3*$scale) 'Background icon must align with the primary button'
-    Require (([NativeUiCheck]::GetWindowLong($backgroundToggle,-16) -band 0x10000) -ne 0) 'Background icon must support keyboard focus'
+    Require (([NativeUiCheck]::GetWindowLong($settingsButton,-16) -band 0x10000) -ne 0) 'Settings gear must support keyboard focus'
     $detailBounds = [NativeUiCheck+Rect]::new()
     Require ([NativeUiCheck]::GetWindowRect([NativeUiCheck]::GetDlgItem($window,114),[ref]$detailBounds)) 'Missing idle information'
     $null = [NativeUiCheck]::MapWindowPoints(0,$window,[ref]$detailBounds,2)
@@ -101,16 +106,7 @@ try {
     Require ((Text $button) -eq 'Start (F10)') 'Startup button differs'
     Require ((Text $hours) -eq '3' -and (Text $minutes) -eq '0' -and (Text $seconds) -eq '0') 'Default duration differs'
     Require ((Text $label) -eq 'Stop after') 'Countdown not initially off'
-    Require ((Text $backgroundToggle) -eq 'Make background transparent') 'Background icon must have an accessible action name'
-    Click $backgroundToggle
-    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x80000) -ne 0) 'Transparent background mode was not enabled'
-    [uint32]$key = 0; [byte]$alpha = 0; [uint32]$flags = 0
-    Require (![NativeUiCheck]::GetLayeredWindowAttributes($window,[ref]$key,[ref]$alpha,[ref]$flags)) 'Transparent mode must use a per-pixel surface, not color-key click-through holes'
-    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x20) -eq 0) 'Controls must remain clickable in transparent mode'
-    Require ((Text $backgroundToggle) -eq 'Restore opaque background') 'Transparent icon action name did not update'
-    Click $backgroundToggle
-    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x80000) -eq 0) 'Opaque background mode was not restored'
-    Require ((Text $button) -eq 'Start (F10)' -and (Text $hours) -eq '3' -and (Text $label) -eq 'Stop after') 'Background toggle changed monitoring or duration state'
+    Require ((Text $settingsButton) -eq 'Settings') 'Settings gear must have an accessible action name'
     if ($Screenshot) {
         Add-Type -AssemblyName System.Drawing
         $rect = [NativeUiCheck+Rect]::new()
@@ -126,6 +122,22 @@ try {
             $bitmap.Save($imagePath,[Drawing.Imaging.ImageFormat]::Png)
         } finally { $bitmap.Dispose() }
     }
+    $null = [NativeUiCheck]::SendMessage($window,0x111,603,0)
+    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x80000) -ne 0) 'Transparent background mode was not enabled'
+    [uint32]$key = 0; [byte]$alpha = 0; [uint32]$flags = 0
+    Require (![NativeUiCheck]::GetLayeredWindowAttributes($window,[ref]$key,[ref]$alpha,[ref]$flags)) 'Transparent mode must use a per-pixel surface, not color-key click-through holes'
+    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x20) -eq 0) 'Controls must remain clickable in transparent mode'
+    Require ((Text $settingsButton) -eq 'Settings') 'Gear action name changed'
+    $null = [NativeUiCheck]::SendMessage($window,0x111,603,0)
+    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x80000) -eq 0) 'Opaque background mode was not restored'
+    $null = [NativeUiCheck]::SendMessage($window,0x111,205,0)
+    Require ((Text $inLabel) -eq 'In 05:00') 'Five-minute idle setting did not update countdown'
+    $null = [NativeUiCheck]::SendMessage($window,0x111,203,0)
+    $null = [NativeUiCheck]::SendMessage($window,0x111,320,0)
+    $null = [NativeUiCheck]::SendMessage($window,0x111,602,0)
+    $settingsText = Get-Content (Join-Path $settingsTestDir 'AZuSanpo/settings.conf') -Raw
+    Require ($settingsText -match 'repeat_seconds=120' -and $settingsText -match 'mode=random') 'Settings were not saved'
+    Require ((Text $button) -eq 'Start (F10)' -and (Text $hours) -eq '3' -and (Text $label) -eq 'Stop after') 'Background toggle changed monitoring or duration state'
     $minuteSpinner = [NativeUiCheck]::GetDlgItem($window,106)
     $secondSpinner = [NativeUiCheck]::GetDlgItem($window,107)
     $hourSpinner = [NativeUiCheck]::GetDlgItem($window,112)
@@ -142,8 +154,8 @@ try {
     $null = [NativeUiCheck]::WriteText($hours,0xC,0,'1')
     Click $check
     Require ((Text $label) -in @('Stop 01:00:00','Stop 00:59:59')) 'Hour field did not set a one-hour countdown'
-    Click $backgroundToggle
-    Click $backgroundToggle
+    $null = [NativeUiCheck]::SendMessage($window,0x111,603,0)
+    $null = [NativeUiCheck]::SendMessage($window,0x111,603,0)
     Require ([NativeUiCheck]::SendMessage($check,0xF0,0,0).ToInt64() -eq 1) 'Background toggle changed checkbox state'
     Require ((Text $label) -in @('Stop 01:00:00','Stop 00:59:59')) 'Background toggle changed active countdown'
     Click $check
@@ -166,7 +178,22 @@ try {
     Require ((Text $button) -eq 'Stop (F10)') 'Global F10 did not start'
     F10
     Require ((Text $button) -eq 'Start (F10)') 'Global F10 did not stop'
-    'PASS three-row window, controls, background toggle, Start/Stop, countdown, zero duration, global F10'
+    $null = [NativeUiCheck]::SendMessage($window,0x111,205,0)
+    $null = [NativeUiCheck]::SendMessage($window,0x111,603,0)
+    $null = $process.CloseMainWindow()
+    Require ($process.WaitForExit(5000)) 'Window did not close before settings reload'
+    $process.Dispose()
+    $env:LOCALAPPDATA = $settingsTestDir
+    try { $process = Start-Process -FilePath (Resolve-Path -LiteralPath $Executable).Path -PassThru }
+    finally { $env:LOCALAPPDATA = $previousLocalAppData }
+    Require ($process.WaitForInputIdle(10000)) 'App did not reopen with saved settings'
+    $process.Refresh()
+    $window = $process.MainWindowHandle
+    Require ((Text ([NativeUiCheck]::GetDlgItem($window,116))) -eq 'In 05:00') 'Saved idle time was not restored'
+    Require (([NativeUiCheck]::GetWindowLong($window,-20) -band 0x80000) -ne 0) 'Saved transparency was not restored'
+    $settingsText = Get-Content (Join-Path $settingsTestDir 'AZuSanpo/settings.conf') -Raw
+    Require ($settingsText -match 'repeat_seconds=120' -and $settingsText -match 'mode=random') 'Saved interval or mode was not restored'
+    'PASS three-row window, settings gear, saved options, transparency, Start/Stop, countdown, global F10'
     $failed = $false
 } finally {
     if (!$process.HasExited) {
@@ -177,4 +204,8 @@ try {
         }
     }
     $process.Dispose()
+    $testRoot = [IO.Path]::GetFullPath($settingsTestDir)
+    if ($testRoot.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $testRoot -Recurse -Force
+    }
 }

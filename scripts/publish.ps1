@@ -10,7 +10,7 @@ if (Test-Path -LiteralPath $outputPath) {
 $manifest = Join-Path $projectRoot "Cargo.toml"
 Push-Location $projectRoot
 try {
-    cargo build --manifest-path $manifest --release --locked
+    cargo +stable-x86_64-pc-windows-gnu build --manifest-path $manifest --release --locked
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 } finally { Pop-Location }
 New-Item -ItemType Directory -Force $outputPath | Out-Null

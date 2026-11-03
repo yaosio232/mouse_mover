@@ -1,8 +1,11 @@
 # Windows security checks — 2026-11-03
 
-The report from another computer could not be reproduced or identified: the
-antivirus vendor, detection name and policy are unavailable. This release must
-not be described as antivirus-approved or as a confirmed false-positive fix.
+The report identified Trend Micro Apex One and the detection name
+`Troj.Win32.TRX.XXPE50FFF110`. Issue #1 records local reproduction with the
+original release build and an eight-minute observation without the detection
+after restoring Cargo's default release profile. The vendor's exact detection
+basis remains unknown. This release must not be described as antivirus-approved
+or as a confirmed false-positive fix.
 
 Local checks found:
 

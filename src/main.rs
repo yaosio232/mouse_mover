@@ -1,14 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod settings;
+
 use azu_sanpo::{
     build_azki_path, cancel_worker, center_path, countdown_seconds, is_physical_keyboard,
     is_physical_mouse, replace_worker_cancel, ActivityState, Bounds, Status, WorkerCancel,
 };
+use settings::{Mode, Settings};
 use std::{
     cell::RefCell,
     sync::{
         atomic::{AtomicBool, AtomicIsize, Ordering},
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -48,11 +51,23 @@ use windows_sys::Win32::{
 const WM_INPUT_EVENT: u32 = WM_APP + 1;
 const WM_TIMER_ID: usize = 1;
 const WM_HOTKEY_ID: i32 = 1;
+const IDLE_1: i32 = 201;
+const IDLE_3: i32 = 203;
+const IDLE_5: i32 = 205;
+const IDLE_10: i32 = 210;
+const REPEAT_30: i32 = 230;
+const REPEAT_60: i32 = 260;
+const REPEAT_120: i32 = 320;
+const REPEAT_300: i32 = 500;
+const MODE_WRITE: i32 = 601;
+const MODE_RANDOM: i32 = 602;
+const SETTINGS_TRANSPARENT: i32 = 603;
 const TRANSPARENCY_KEY: u32 = 1 | (1 << 8) | (1 << 16);
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 static MOUSE_HOOK: AtomicIsize = AtomicIsize::new(0);
 static KEY_HOOK: AtomicIsize = AtomicIsize::new(0);
 static WORKER_CANCEL: WorkerCancel = Mutex::new(None);
+static SETTINGS: LazyLock<Mutex<Settings>> = LazyLock::new(|| Mutex::new(Settings::default()));
 static mut INSTANCE: isize = 0;
 static mut DPI: i32 = 96;
 static mut TIMER_RUNNING: bool = false;
@@ -173,6 +188,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     message("Unable to create the application controls.");
                     return -1;
                 }
+                let transparent = SETTINGS.lock().unwrap().transparent;
+                if transparent {
+                    toggle_background();
+                }
                 RegisterHotKey(hwnd, WM_HOTKEY_ID, 0, VK_F10 as u32);
                 SetWindowPos(
                     hwnd,
@@ -194,7 +213,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 if id == 100 && notification == BN_CLICKED as u16 {
                     toggle();
                 } else if id == 117 && notification == BN_CLICKED as u16 {
-                    toggle_background();
+                    show_settings_menu(hwnd);
+                } else if matches!(
+                    id,
+                    IDLE_1
+                        | IDLE_3
+                        | IDLE_5
+                        | IDLE_10
+                        | REPEAT_30
+                        | REPEAT_60
+                        | REPEAT_120
+                        | REPEAT_300
+                        | MODE_WRITE
+                        | MODE_RANDOM
+                        | SETTINGS_TRANSPARENT
+                ) {
+                    apply_settings_command(id);
                 } else if id == 103
                     || ((id == 104 || id == 105 || id == 111) && notification == EN_CHANGE as u16)
                 {
@@ -242,9 +276,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     if let Err(error) = render_layered(hwnd) {
                         BACKGROUND_TRANSPARENT = false;
                         let _ = apply_background_mode(hwnd, false);
-                        if let Some(ui) = UI {
-                            set_text(ui.background_toggle, "Make background transparent");
-                        }
+                        let mut settings = SETTINGS.lock().unwrap();
+                        settings.transparent = false;
+                        let _ = settings.save();
                         RedrawWindow(
                             hwnd,
                             std::ptr::null(),
@@ -294,7 +328,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         return 1;
                     }
                     if item.CtlID == 117 {
-                        draw_transparency_toggle(item);
+                        draw_settings_button(item);
                         return 1;
                     }
                 }
@@ -391,56 +425,56 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
             "BUTTON",
             "Start (F10)",
             BS_OWNERDRAW as u32 | WS_TABSTOP,
-            8,
-            8,
-            292,
-            40,
+            7,
+            7,
+            260,
+            36,
             100,
         );
         let background_toggle = make(
             "BUTTON",
-            "Make background transparent",
+            "Settings",
             BS_OWNERDRAW as u32 | WS_TABSTOP,
-            306,
-            14,
-            26,
+            272,
+            11,
+            24,
             28,
             117,
         );
-        let lamp = make("STATIC", "", SS_OWNERDRAW, 8, 63, 14, 14, 101);
-        let status_badge = make("STATIC", "Not Started", SS_OWNERDRAW, 26, 58, 108, 24, 102);
+        let lamp = make("STATIC", "", SS_OWNERDRAW, 7, 54, 12, 12, 101);
+        let status_badge = make("STATIC", "Not Started", SS_OWNERDRAW, 23, 49, 99, 22, 102);
         let idle_badge = make(
             "STATIC",
             "IDLE 00:00:00",
             SS_OWNERDRAW,
-            142,
-            58,
-            128,
-            24,
+            125,
+            49,
+            114,
+            22,
             114,
         );
-        let in_time = make("STATIC", "In 03:00", SS_OWNERDRAW, 276, 58, 56, 24, 116);
+        let in_time = make("STATIC", "In 03:00", SS_OWNERDRAW, 245, 49, 52, 22, 116);
         let check = make(
             "BUTTON",
             "Stop after",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            8,
-            96,
-            142,
-            26,
+            7,
+            82,
+            122,
+            24,
             103,
         );
-        let hour_label = make("STATIC", "h", SS_OWNERDRAW, 198, 99, 12, 20, 113);
-        let min_label = make("STATIC", "m", SS_OWNERDRAW, 262, 99, 12, 20, 108);
-        let sec_label_text = make("STATIC", "s", SS_OWNERDRAW, 326, 99, 10, 20, 109);
+        let hour_label = make("STATIC", "h", SS_OWNERDRAW, 176, 84, 9, 20, 113);
+        let min_label = make("STATIC", "m", SS_OWNERDRAW, 229, 84, 12, 20, 108);
+        let sec_label_text = make("STATIC", "s", SS_OWNERDRAW, 285, 84, 10, 20, 109);
         let hours = make(
             "EDIT",
             "3",
             WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
-            152,
-            96,
-            44,
-            26,
+            136,
+            82,
+            38,
+            24,
             111,
         );
         let uphour = make(
@@ -479,10 +513,10 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
             "EDIT",
             "0",
             WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
-            216,
-            96,
-            44,
-            26,
+            189,
+            82,
+            38,
+            24,
             104,
         );
         let upmin = make(
@@ -504,10 +538,10 @@ unsafe fn create_controls(hwnd: HWND) -> bool {
             "EDIT",
             "0",
             WS_BORDER | WS_TABSTOP | ES_NUMBER as u32 | ES_CENTER as u32,
-            280,
-            96,
-            44,
-            26,
+            245,
+            82,
+            38,
+            24,
             105,
         );
         let upsec = make(
@@ -653,19 +687,10 @@ unsafe fn toggle_background() {
     }
     unsafe { BACKGROUND_TRANSPARENT = enable };
     unsafe {
-        set_text(
-            ui.background_toggle,
-            if enable {
-                "Restore opaque background"
-            } else {
-                "Make background transparent"
-            },
-        );
         if enable {
             if let Err(error) = render_layered(ui.hwnd) {
                 BACKGROUND_TRANSPARENT = false;
                 let _ = apply_background_mode(ui.hwnd, false);
-                set_text(ui.background_toggle, "Make background transparent");
                 message(&format!(
                     "Unable to render transparent window:\r\n{}",
                     std::io::Error::from_raw_os_error(error as i32)
@@ -679,6 +704,105 @@ unsafe fn toggle_background() {
                 RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
             );
         }
+    }
+}
+
+unsafe fn show_settings_menu(hwnd: HWND) {
+    let settings = *SETTINGS.lock().unwrap();
+    unsafe {
+        let menu = CreatePopupMenu();
+        let mode = CreatePopupMenu();
+        let idle = CreatePopupMenu();
+        let repeat = CreatePopupMenu();
+        if menu.is_null() || mode.is_null() || idle.is_null() || repeat.is_null() {
+            for handle in [menu, mode, idle, repeat] {
+                if !handle.is_null() {
+                    DestroyMenu(handle);
+                }
+            }
+            return;
+        }
+        let add = |menu, id: i32, label: &str, checked: bool| {
+            let flags = MF_STRING | if checked { MF_CHECKED } else { 0 };
+            AppendMenuW(menu, flags, id as usize, wide(label).as_ptr());
+        };
+        add(mode, MODE_WRITE, "寫字", settings.mode == Mode::Write);
+        add(
+            mode,
+            MODE_RANDOM,
+            "隨機滑動後點中心",
+            settings.mode == Mode::Random,
+        );
+        add(idle, IDLE_1, "1 分鐘", settings.idle_minutes == 1);
+        add(idle, IDLE_3, "3 分鐘", settings.idle_minutes == 3);
+        add(idle, IDLE_5, "5 分鐘", settings.idle_minutes == 5);
+        add(idle, IDLE_10, "10 分鐘", settings.idle_minutes == 10);
+        add(repeat, REPEAT_30, "30 秒", settings.repeat_seconds == 30);
+        add(repeat, REPEAT_60, "1 分鐘", settings.repeat_seconds == 60);
+        add(repeat, REPEAT_120, "2 分鐘", settings.repeat_seconds == 120);
+        add(repeat, REPEAT_300, "5 分鐘", settings.repeat_seconds == 300);
+        AppendMenuW(menu, MF_POPUP, mode as usize, wide("移動模式").as_ptr());
+        AppendMenuW(
+            menu,
+            MF_POPUP,
+            idle as usize,
+            wide("開始前閒置時間").as_ptr(),
+        );
+        AppendMenuW(menu, MF_POPUP, repeat as usize, wide("每輪間隔").as_ptr());
+        add(menu, SETTINGS_TRANSPARENT, "透明背景", settings.transparent);
+        let mut rect = RECT::default();
+        if let Some(ui) = UI {
+            GetWindowRect(ui.background_toggle, &mut rect);
+            SetForegroundWindow(hwnd);
+            TrackPopupMenuEx(
+                menu,
+                TPM_RIGHTALIGN,
+                rect.right,
+                rect.bottom,
+                hwnd,
+                std::ptr::null(),
+            );
+            PostMessageW(hwnd, WM_NULL, 0, 0);
+        }
+        DestroyMenu(menu);
+    }
+}
+
+unsafe fn apply_settings_command(id: i32) {
+    if id == SETTINGS_TRANSPARENT {
+        unsafe { toggle_background() };
+    }
+    let mut settings = SETTINGS.lock().unwrap();
+    match id {
+        IDLE_1 => settings.idle_minutes = 1,
+        IDLE_3 => settings.idle_minutes = 3,
+        IDLE_5 => settings.idle_minutes = 5,
+        IDLE_10 => settings.idle_minutes = 10,
+        REPEAT_30 => settings.repeat_seconds = 30,
+        REPEAT_60 => settings.repeat_seconds = 60,
+        REPEAT_120 => settings.repeat_seconds = 120,
+        REPEAT_300 => settings.repeat_seconds = 300,
+        MODE_WRITE => settings.mode = Mode::Write,
+        MODE_RANDOM => settings.mode = Mode::Random,
+        SETTINGS_TRANSPARENT => settings.transparent = unsafe { BACKGROUND_TRANSPARENT },
+        _ => return,
+    }
+    let changed_idle = matches!(id, IDLE_1 | IDLE_3 | IDLE_5 | IDLE_10);
+    let idle_seconds = settings.idle_minutes * 60;
+    let saved = settings.save();
+    drop(settings);
+    if let Err(error) = saved {
+        unsafe { message(&format!("Unable to save settings:\r\n{error}")) };
+    }
+    if changed_idle {
+        STATE.with(|s| s.borrow_mut().set_idle_seconds(idle_seconds));
+        if STATE.with(|s| s.borrow().status == Status::Stopped) {
+            unsafe { update_display(Some(Duration::ZERO)) };
+        } else {
+            unsafe { tick() };
+        }
+    } else {
+        unsafe { update_display(None) };
     }
 }
 
@@ -944,7 +1068,7 @@ unsafe fn paint_layered_children(hwnd: HWND, dc: HDC, window: &RECT) {
             unsafe {
                 match id {
                     100 => draw_primary_button(&draw),
-                    117 => draw_transparency_toggle(&draw),
+                    117 => draw_settings_button(&draw),
                     101 => draw_status_dot(&draw),
                     102 => draw_status_badge(&draw),
                     114 => draw_idle_badge(&draw),
@@ -1055,7 +1179,8 @@ unsafe fn update_display(initial: Option<Duration>) {
     if unsafe { set_text(ui.idle_badge, &format!("IDLE {}", idle_clock(idle))) } {
         unsafe { invalidate_ui(ui.idle_badge) };
     }
-    let left = until_move(idle);
+    let idle_seconds = SETTINGS.lock().unwrap().idle_minutes * 60;
+    let left = until_move(idle, idle_seconds);
     if unsafe { set_text(ui.in_time, &format!("In {}", clock(left))) } {
         unsafe { invalidate_ui(ui.in_time) };
     }
@@ -1094,8 +1219,8 @@ fn idle_clock(d: Duration) -> String {
     let sec = d.as_secs();
     format!("{:02}:{:02}:{:02}", sec / 3600, sec / 60 % 60, sec % 60)
 }
-fn until_move(idle: Duration) -> Duration {
-    Duration::from_secs(180).saturating_sub(idle)
+fn until_move(idle: Duration, idle_seconds: u32) -> Duration {
+    Duration::from_secs(u64::from(idle_seconds)).saturating_sub(idle)
 }
 fn countdown_caption(
     checked: bool,
@@ -1168,12 +1293,12 @@ unsafe fn init_theme_resources() -> bool {
             )
         };
         FONTS = [
+            font(9, FW_NORMAL as i32),
+            font(11, FW_SEMIBOLD as i32),
             font(10, FW_NORMAL as i32),
-            font(12, FW_SEMIBOLD as i32),
-            font(11, FW_NORMAL as i32),
-            font(10, FW_SEMIBOLD as i32),
-            font(10, FW_SEMIBOLD as i32),
-            font(12, FW_NORMAL as i32),
+            font(9, FW_SEMIBOLD as i32),
+            font(9, FW_SEMIBOLD as i32),
+            font(10, FW_NORMAL as i32),
         ];
         !BG_BRUSH.is_null()
             && !KEY_BRUSH.is_null()
@@ -1301,7 +1426,7 @@ unsafe fn draw_primary_button(item: &DRAWITEMSTRUCT) {
     }
 }
 
-unsafe fn draw_transparency_toggle(item: &DRAWITEMSTRUCT) {
+unsafe fn draw_settings_button(item: &DRAWITEMSTRUCT) {
     unsafe {
         let saved_dc = SaveDC(item.hDC);
         let rect = item.rcItem;
@@ -1330,33 +1455,29 @@ unsafe fn draw_transparency_toggle(item: &DRAWITEMSTRUCT) {
         }
         DeleteObject(region as _);
 
-        let offset = if item.itemState & ODS_SELECTED != 0 {
-            scale(1)
+        let symbol = wide("⚙");
+        if BACKGROUND_TRANSPARENT {
+            draw_outlined_text(
+                item.hDC,
+                symbol.as_ptr(),
+                1,
+                rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                rgb(248, 250, 255),
+                FONTS[1],
+            );
         } else {
-            0
-        };
-        let side = scale(16);
-        let cell = (side / 4).max(1);
-        let left = rect.left + (rect.right - rect.left - side) / 2 + offset;
-        let top = rect.top + (rect.bottom - rect.top - side) / 2 + offset;
-        for row in 0..4 {
-            for column in 0..4 {
-                let cell_rect = RECT {
-                    left: left + column * cell,
-                    top: top + row * cell,
-                    right: left + (column + 1) * cell,
-                    bottom: top + (row + 1) * cell,
-                };
-                FillRect(
-                    item.hDC,
-                    &cell_rect,
-                    if (row + column) % 2 == 0 {
-                        SURFACE_BRUSH
-                    } else {
-                        BUTTON_BORDER_BRUSH
-                    },
-                );
-            }
+            SelectObject(item.hDC, FONTS[1] as _);
+            SetBkMode(item.hDC, TRANSPARENT as i32);
+            SetTextColor(item.hDC, rgb(37, 99, 235));
+            let mut glyph_rect = rect;
+            DrawTextW(
+                item.hDC,
+                symbol.as_ptr(),
+                1,
+                &mut glyph_rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+            );
         }
         if item.itemState & ODS_FOCUS != 0 {
             let mut focus = rect;
@@ -1696,7 +1817,32 @@ unsafe fn start_movement() {
                 break;
             }
             let bounds = unsafe { primary_bounds() };
-            let path = center_path(&build_azki_path(), bounds);
+            let settings = *SETTINGS.lock().unwrap();
+            let path = match settings.mode {
+                Mode::Write => center_path(&build_azki_path(), bounds),
+                Mode::Random => {
+                    let mut cursor = POINT::default();
+                    if unsafe { GetCursorPos(&mut cursor) } == 0 {
+                        cursor.x = bounds.left + bounds.width / 2;
+                        cursor.y = bounds.top + bounds.height / 2;
+                    }
+                    let mut from = azu_sanpo::Point {
+                        x: cursor.x,
+                        y: cursor.y,
+                    };
+                    let mut path = Vec::new();
+                    for target in random_targets(bounds, &mut seed) {
+                        for step in 1..=16 {
+                            path.push(azu_sanpo::Point {
+                                x: from.x + (target.x - from.x) * step / 16,
+                                y: from.y + (target.y - from.y) * step / 16,
+                            });
+                        }
+                        from = target;
+                    }
+                    path
+                }
+            };
             for p in path {
                 if cancel.load(Ordering::SeqCst) {
                     break;
@@ -1710,7 +1856,7 @@ unsafe fn start_movement() {
                     }
                     break;
                 }
-                sleep_cancelable(Duration::from_millis(5 + (rng(&mut seed) % 5)), &cancel);
+                sleep_cancelable(Duration::from_millis(12 + (rng(&mut seed) % 5)), &cancel);
             }
             if cancel.load(Ordering::SeqCst) {
                 break;
@@ -1749,11 +1895,32 @@ unsafe fn start_movement() {
                 }
                 break;
             }
-            if sleep_cancelable(Duration::from_secs(60), &cancel) {
+            if sleep_cancelable(
+                Duration::from_secs(u64::from(settings.repeat_seconds)),
+                &cancel,
+            ) {
                 break;
             }
         }
     });
+}
+fn random_targets(bounds: Bounds, seed: &mut u64) -> Vec<azu_sanpo::Point> {
+    let mut targets = Vec::new();
+    let inset_x = bounds.width / 10;
+    let inset_y = bounds.height / 10;
+    let span_x = (bounds.width - inset_x * 2).max(1) as u64;
+    let span_y = (bounds.height - inset_y * 2).max(1) as u64;
+    for _ in 0..3 + rng(seed) % 3 {
+        targets.push(azu_sanpo::Point {
+            x: bounds.left + inset_x + (rng(seed) % span_x) as i32,
+            y: bounds.top + inset_y + (rng(seed) % span_y) as i32,
+        });
+    }
+    targets.push(azu_sanpo::Point {
+        x: bounds.left + bounds.width / 2,
+        y: bounds.top + bounds.height / 2,
+    });
+    targets
 }
 fn rng(seed: &mut u64) -> u64 {
     *seed ^= *seed << 13;
@@ -1858,6 +2025,9 @@ unsafe fn message(text: &str) {
 
 fn main() {
     unsafe {
+        let loaded = Settings::load();
+        STATE.with(|s| s.borrow_mut().set_idle_seconds(loaded.idle_minutes * 60));
+        *SETTINGS.lock().unwrap() = loaded;
         INSTANCE = GetModuleHandleW(std::ptr::null()) as isize;
         DPI = GetDpiForSystem() as i32;
         InitCommonControls();
@@ -1867,8 +2037,8 @@ fn main() {
         let mut rect = RECT {
             left: 0,
             top: 0,
-            right: sc(340),
-            bottom: sc(130),
+            right: sc(304),
+            bottom: sc(112),
         };
         AdjustWindowRectEx(&mut rect, style, 0, WS_EX_TOPMOST);
         let wc = WNDCLASSW {
@@ -1941,6 +2111,29 @@ unsafe fn startup_error(api: &str, code: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_mode_visits_three_to_five_points_then_screen_center() {
+        let bounds = Bounds {
+            left: 0,
+            top: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let mut seed = 1;
+        for _ in 0..100 {
+            let targets = random_targets(bounds, &mut seed);
+            assert!((4..=6).contains(&targets.len()));
+            assert_eq!(
+                *targets.last().unwrap(),
+                azu_sanpo::Point { x: 960, y: 540 }
+            );
+            for point in &targets[..targets.len() - 1] {
+                assert!((192..1728).contains(&point.x));
+                assert!((108..972).contains(&point.y));
+            }
+        }
+    }
     use std::sync::atomic::AtomicUsize;
     use windows_sys::Win32::Graphics::Gdi::{
         CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, GetDC, GetPixel, ReleaseDC,
@@ -1956,9 +2149,10 @@ mod tests {
         assert_eq!(idle_clock(Duration::ZERO), "00:00:00");
         assert_eq!(idle_clock(Duration::from_secs(3600)), "01:00:00");
         assert_eq!(idle_clock(Duration::from_secs(360_001)), "100:00:01");
-        assert_eq!(clock(until_move(Duration::from_secs(179))), "00:01");
-        assert_eq!(clock(until_move(Duration::from_secs(180))), "00:00");
-        assert_eq!(clock(until_move(Duration::from_secs(181))), "00:00");
+        assert_eq!(clock(until_move(Duration::from_secs(179), 180)), "00:01");
+        assert_eq!(clock(until_move(Duration::from_secs(180), 180)), "00:00");
+        assert_eq!(clock(until_move(Duration::from_secs(181), 180)), "00:00");
+        assert_eq!(clock(until_move(Duration::from_secs(179), 300)), "02:01");
     }
 
     #[test]
@@ -2046,8 +2240,8 @@ mod tests {
                 WS_POPUP,
                 0,
                 0,
-                340,
-                130,
+                304,
+                112,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -2236,9 +2430,9 @@ mod tests {
                 },
                 ..Default::default()
             };
-            draw_transparency_toggle(&icon_item);
+            draw_settings_button(&icon_item);
             assert_eq!(GetPixel(memory, 0, 0), TRANSPARENCY_KEY);
-            assert_ne!(GetPixel(memory, 6, 7), TRANSPARENCY_KEY);
+            assert!(has_non_key_pixel(memory, 0, 0, 26, 28));
 
             BACKGROUND_TRANSPARENT = false;
             draw_status_badge(&status_item);

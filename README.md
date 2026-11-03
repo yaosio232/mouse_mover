@@ -2,37 +2,38 @@
 
 A pure Rust mouse movement tool using native Win32 controls. Runs directly without .NET or a bundled GUI runtime.
 
-The Rust build is about 354 KB; local warm startup was about 10× faster than the
-previous C# standalone release. See [measurements and verification](docs/rust-migration-results.md).
+The earlier size-optimized Rust build was about 354 KB; local warm startup was
+about 10× faster than the previous C# standalone release. See
+[measurements and verification](docs/rust-migration-results.md).
 
 The executable is unsigned. Product/version metadata and local Defender scan
 results are documented in [Windows security checks](docs/windows-security-status.md);
 acceptance by other security products has not been verified.
 
-![Light native Windows interface](docs/ui-rust-light.png)
+![Compact native Windows interface with settings gear](docs/ui-settings-compact.png)
 
 ## Download and usage
 
 Download `MouseMoverApp.exe` from [Releases](https://github.com/yaosio232/mouse_mover/releases) and run it directly. Supports Windows x64.
 
 - Press **Start (F10)** or the global **F10** hotkey to start monitoring physical mouse and keyboard input.
-- After three minutes of inactivity, the cursor starts moving. When movement finishes, the app clicks the left mouse button once, waits 60 seconds, and repeats.
-- Keyboard input or mouse movement cancels automatic movement until the next three-minute idle period.
+- After three minutes of inactivity by default, the cursor starts moving. When movement finishes, the app clicks the left mouse button once, waits 60 seconds by default, and repeats.
+- Keyboard input or mouse movement cancels automatic movement until the configured idle period passes again.
 - Press **Stop** or **F10** to stop completely.
 
 ## Additional features
 
 - **Stop after** is an independent stop timer. Enabling it or changing the duration restarts the countdown immediately; pressing Start also restarts it. When it expires, the app displays Stop done and stops completely. It is disabled by default, with a preset of 3 hours / 0 minutes / 0 seconds.
-- The checkerboard icon toggles background transparency; buttons and inputs remain opaque; text has no backplate. Full button and checkbox areas remain clickable in either mode.
+- The gear opens settings for idle time (1/3/5/10 minutes), repeat interval (30/60/120/300 seconds), background transparency, and writing or random movement. Random mode moves to 3–5 positions before clicking the screen center. Settings are saved locally and restored on launch.
 - Transparent mode uses outlined floating text; see [dark](docs/ui-transparent-dark.png) and [light](docs/ui-transparent-light.png) backdrop checks.
-- Closing the window stops the app. There is no background service, saved settings, or network functionality.
+- Closing the window stops the app. There is no background service or network functionality.
 
 ## Build and publish
 
 Requires Windows, Rust stable (x86_64-pc-windows-gnu), and a compatible x64 MinGW-w64 toolchain (GCC, dlltool, windres) on PATH:
 
 ```powershell
-cargo build --release --locked
+cargo +stable-x86_64-pc-windows-gnu build --release --locked
 cargo test --locked
 ./scripts/publish.ps1
 ```
@@ -57,22 +58,22 @@ The publish directory `artifacts/release` contains `MouseMoverApp.exe` and Engli
 從 [Releases](https://github.com/yaosio232/mouse_mover/releases) 下載 `MouseMoverApp.exe`，直接執行。支援 Windows x64。
 
 - 按 **Start (F10)** 或全域 **F10**，開始監看真實滑鼠及鍵盤輸入。
-- 閒置三分鐘後，游標會開始移動，完成後左鍵點擊一次，等待 60 秒再重複。
-- 鍵盤輸入或滑鼠移動時會取消移動，直到再度閒置三分鐘。
+- 預設閒置三分鐘後，游標會開始移動，完成後左鍵點擊一次，預設等待 60 秒再重複。
+- 鍵盤輸入或滑鼠移動時會取消移動，直到再次達到設定的閒置時間。
 - 按 **Stop** 或 **F10** 完全停止。
 
 ### 額外功能
 
 - **Stop after** 是獨立的停止倒數；勾選／修改時長立即重新計時，Start 時也重新計時，到期顯示 Stop done 並完全停止。預設未勾選，3 小時／0 分鐘／0 秒。
-- 棋盤格圖示可切換透明背景；文字去背，按鈕與輸入框保持不透明。兩種模式下，整個按鈕與勾選框區域皆可點擊。
-- 關閉視窗即停止；沒有背景服務、設定儲存或網路功能。
+- 齒輪可設定閒置時間（1／3／5／10 分鐘）、每輪間隔（30／60／120／300 秒）、透明背景，以及寫字或隨機滑動。隨機模式每輪滑到 3–5 個位置，最後在螢幕中心點一下；設定會儲存在本機並於下次啟動時載入。
+- 關閉視窗即停止；沒有背景服務或網路功能。
 
 ### 建置與發佈
 
 需要 Windows、Rust stable（x86_64-pc-windows-gnu），以及 PATH 中相容的 x64 MinGW-w64 工具鏈（GCC、dlltool、windres）：
 
 ```powershell
-cargo build --release --locked
+cargo +stable-x86_64-pc-windows-gnu build --release --locked
 cargo test --locked
 ./scripts/publish.ps1
 ```

@@ -49,7 +49,12 @@ function Require-Eventually([scriptblock]$Condition,[string]$Message) {
 }
 $originalPointer=[PointerCheck+Point]::new()
 $null=[PointerCheck]::GetCursorPos([ref]$originalPointer)
-$preview=Start-Process -FilePath (Resolve-Path $Executable).Path -PassThru
+$previousLocalAppData=$env:LOCALAPPDATA
+$settingsTestDir=Join-Path ([IO.Path]::GetTempPath()) ("AzuSanpo-hit-check-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $settingsTestDir | Out-Null
+$env:LOCALAPPDATA=$settingsTestDir
+try { $preview=Start-Process -FilePath (Resolve-Path $Executable).Path -PassThru }
+finally { $env:LOCALAPPDATA=$previousLocalAppData }
 try {
     Require ($preview.WaitForInputIdle(10000)) 'Pointer preview did not initialize'
     $preview.Refresh(); $window=$preview.MainWindowHandle
@@ -57,7 +62,7 @@ try {
     $check=[NativeUiCheck]::GetDlgItem($window,103)
     $icon=[NativeUiCheck]::GetDlgItem($window,117)
     foreach ($mode in @('opaque','transparent')) {
-        if($mode -eq 'transparent') { Click $icon }
+        if($mode -eq 'transparent') { $null=[NativeUiCheck]::SendMessage($window,0x111,603,0) }
         Flush-Ui $window
         foreach ($id in @(100,103,117,111,104,105,112,106,107)) {
             $handle=[NativeUiCheck]::GetDlgItem($window,$id)
@@ -119,13 +124,15 @@ try {
     }
     $rect=Bounds $icon
     Pointer-Click $icon ($rect.Left+1) ($rect.Top+1)
-    Require ((Text $icon) -eq 'Make background transparent') 'Pointer icon padding failed to restore opaque mode'
-    foreach($caption in @('Restore opaque background','Make background transparent','Restore opaque background','Make background transparent')) {
-        Pointer-Click $icon ($rect.Left+1) ($rect.Top+1)
-        Require-Eventually { (Text $icon) -eq $caption } 'Rapid repeated transparency icon clicks failed'
-    }
+    Require ((Text $icon) -eq 'Settings') 'Pointer gear action name differs'
+    [NativeUiCheck]::keybd_event(0x1B,0,0,[UIntPtr]::Zero)
+    [NativeUiCheck]::keybd_event(0x1B,0,2,[UIntPtr]::Zero)
 } finally {
     $null=[PointerCheck]::SetCursorPos($originalPointer.X,$originalPointer.Y)
     if(!$preview.HasExited) { $null=$preview.CloseMainWindow(); Require ($preview.WaitForExit(5000)) 'Pointer preview did not close normally' }
     $preview.Dispose()
+    $testRoot=[IO.Path]::GetFullPath($settingsTestDir)
+    if($testRoot.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $testRoot -Recurse -Force
+    }
 }

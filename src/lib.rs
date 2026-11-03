@@ -51,6 +51,7 @@ pub struct ActivityState {
     pub countdown_done: bool,
     countdown_seconds: u32,
     countdown_enabled: bool,
+    idle_seconds: u32,
 }
 
 impl ActivityState {
@@ -62,7 +63,11 @@ impl ActivityState {
             countdown_done: false,
             countdown_seconds: 0,
             countdown_enabled: false,
+            idle_seconds: 180,
         }
+    }
+    pub fn set_idle_seconds(&mut self, seconds: u32) {
+        self.idle_seconds = seconds.max(1);
     }
     pub fn start(&mut self, last_input: Instant, now: Instant) {
         self.status = Status::Monitoring;
@@ -99,7 +104,8 @@ impl ActivityState {
             return false;
         }
         if self.status == Status::Monitoring
-            && now.duration_since(self.last_input) >= Duration::from_secs(180)
+            && now.duration_since(self.last_input)
+                >= Duration::from_secs(u64::from(self.idle_seconds))
         {
             self.status = Status::Moving;
             return true;
@@ -299,6 +305,15 @@ mod tests {
         assert_eq!(s.status, Status::Monitoring);
         assert!(!s.tick(base + Duration::from_secs(360)));
         assert!(s.tick(base + Duration::from_secs(361)));
+    }
+    #[test]
+    fn configurable_idle_threshold_controls_movement() {
+        let base = at(0);
+        let mut s = ActivityState::new(base);
+        s.set_idle_seconds(5);
+        s.start(base, base);
+        assert!(!s.tick(base + Duration::from_secs(4)));
+        assert!(s.tick(base + Duration::from_secs(5)));
     }
     #[test]
     fn countdown_runs_before_start_and_expires_as_full_stop() {
