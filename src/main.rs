@@ -2026,7 +2026,15 @@ unsafe fn message(text: &str) {
 fn main() {
     unsafe {
         let loaded = Settings::load();
-        STATE.with(|s| s.borrow_mut().set_idle_seconds(loaded.idle_minutes * 60));
+        #[cfg(debug_assertions)]
+        let idle_seconds = std::env::var("AZUSANPO_TEST_IDLE_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(loaded.idle_minutes * 60);
+        #[cfg(not(debug_assertions))]
+        let idle_seconds = loaded.idle_minutes * 60;
+        STATE.with(|s| s.borrow_mut().set_idle_seconds(idle_seconds));
         *SETTINGS.lock().unwrap() = loaded;
         INSTANCE = GetModuleHandleW(std::ptr::null()) as isize;
         DPI = GetDpiForSystem() as i32;
